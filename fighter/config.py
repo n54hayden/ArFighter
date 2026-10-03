@@ -1,0 +1,86 @@
+"""Tunable constants.
+
+Player distances are in "torso units" (shoulder-midpoint to hip-midpoint length),
+so colliders and speed thresholds scale automatically with distance from the camera.
+Enemy distances are fractions of the enemy's height H.
+"""
+
+# --- Display -----------------------------------------------------------------
+SCREEN_W = 1280
+SCREEN_H = 720
+FPS = 60
+WINDOW_TITLE = "AR Shadow Fighter"
+
+# --- Camera / pose thread ----------------------------------------------------
+# On this Mac, index 0 is the iPhone (Continuity Camera) when it's nearby and 1 is the
+# built-in FaceTime camera. With no phone around, the FaceTime camera becomes 0, so
+# the camera thread falls back to 0 when 1 doesn't exist.
+CAMERA_INDEX = 1
+CAMERA_W, CAMERA_H, CAMERA_FPS = 1280, 720, 30
+POSE_INPUT_WIDTH = 640            # frame is downscaled to this before MediaPipe
+POSE_MODEL_COMPLEXITY = 1         # 0 = fastest, 2 = most accurate
+POSE_MIN_DETECTION_CONFIDENCE = 0.5
+POSE_MIN_TRACKING_CONFIDENCE = 0.5
+BACKGROUND_BRIGHTNESS = 0.6       # darken the camera feed for the "shadow" mood
+
+# --- Tracking ----------------------------------------------------------------
+LANDMARK_VISIBILITY = 0.5         # ignore landmarks below this visibility
+LANDMARK_SMOOTHING = 0.7          # EMA weight of the newest sample (1 = no smoothing)
+TRACKING_LOST_TIMEOUT = 0.5       # seconds without a pose before the player is "lost"
+CALIBRATION_SECONDS = 2.5         # seconds of standing still to record the baseline
+DEPTH_SMOOTHING = 0.35
+HORIZON_Y_FRAC = 0.5              # assumed camera horizon (0.5 = camera roughly level)
+
+# --- Player colliders (torso units) ------------------------------------------
+HEAD_RADIUS = 0.36
+TORSO_RADIUS = 0.30
+FOREARM_RADIUS = 0.14
+FIST_RADIUS = 0.20
+LEG_RADIUS = 0.16
+
+# --- Player offence ----------------------------------------------------------
+PUNCH_SPEED_THRESHOLD = 3.5       # torso units / second for a fist to count as a punch
+PUNCH_COOLDOWN = 0.30             # per fist, prevents one punch registering many times
+PUNCH_DAMAGE_MIN = 4
+PUNCH_DAMAGE_MAX = 10
+PLAYER_PUNCH_MIN_DEPTH = 0.80     # step back past this and your punches can't reach
+
+# --- Player defence ----------------------------------------------------------
+PLAYER_MAX_HP = 100
+HEAD_HIT_MULTIPLIER = 1.25
+JUMP_THRESHOLD = 0.20             # ground signal must rise this many torso units
+JUMP_RELEASE = 0.08               # ...and drop back below this to land
+JUMP_GRACE = 0.15                 # seconds a jump still counts after landing (latency)
+GROUND_ADAPT_TAU = 1.0            # seconds; how fast the floor baseline drifts while grounded
+
+# --- Enemy -------------------------------------------------------------------
+ENEMY_MAX_HP = 100
+ENEMY_WALK_SPEED = 0.6            # body heights / second
+ENEMY_AIM_OFFSET = 0.15           # aim strikes this many torso units in front of the target's centre
+ENEMY_FIRST_ATTACK_DELAY = 1.5
+ENEMY_IDLE_MIN = 0.5
+ENEMY_IDLE_MAX = 1.3
+ENEMY_APPROACH_TIMEOUT = 2.5
+ENEMY_COMBO_CHANCE = 0.4          # chance a jab is followed straight away by a cross
+ENEMY_STUN_TIME = 0.55
+ENEMY_STUN_IMMUNITY = 0.6         # after a stun, hits still hurt but don't re-stun
+ENEMY_KNOCKBACK = 0.9             # body heights / second
+ENEMY_POSE_BLEND = 16.0
+ENEMY_ATTACK_SPEED = 1.0          # > 1 = faster attacks (harder)
+ENEMY_ATTACK_WEIGHTS = {
+    "jab": 3.0,
+    "cross": 2.0,
+    "uppercut": 1.5,
+    "high_kick": 1.5,
+    "low_sweep": 2.0,
+}
+
+# --- Colours -----------------------------------------------------------------
+ENEMY_BODY = (8, 6, 12)
+ENEMY_BACK = (30, 26, 40)
+ENEMY_RIM = (95, 65, 150)
+ENEMY_FLASH = (235, 235, 245)
+ENEMY_EYES = (230, 235, 255)
+ENEMY_EYES_ANGRY = (255, 70, 40)
+PLAYER_BAR = (70, 200, 255)
+ENEMY_BAR = (200, 60, 230)

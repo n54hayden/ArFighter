@@ -1,0 +1,5 @@
+pygame>=2.1
+opencv-python>=4.7
+# 0.10.21 still ships the legacy mp.solutions.pose API used here
+mediapipe==0.10.21
+numpy
