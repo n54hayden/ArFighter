@@ -21,10 +21,16 @@ from .geometry import Capsule, Circle, Vec, draw_shape
 # Body proportions as fractions of total height H.
 UPPER_ARM, FOREARM, THIGH, SHIN = 0.17, 0.16, 0.245, 0.245
 TORSO, HEAD_OFFSET, HEAD_R, FOOT_LEN, FOOT_H = 0.30, 0.11, 0.065, 0.07, 0.02
+STAFF_LEN, STAFF_R, STAFF_HAND_GAP = 0.95, 0.016, 0.09
 
 Pose = Dict[str, float]
 
-GUARD: Pose = dict(lean=8, fs=40, fe=100, rs=20, re=130, fh=18, fk=-24, rh=-16, rk=-6, dx=0.0)
+# Staff keys (only used by bosses with a staff; their arms reach for the staff by IK):
+#   sa = staff angle (same convention as limbs, 90 = pointing forward)
+#   sx, sy = grip centre relative to the shoulder (H units, +x forward, +y down)
+#   so = how far the staff is slid forward through the grip (H units)
+GUARD: Pose = dict(lean=8, fs=40, fe=100, rs=20, re=130, fh=18, fk=-24, rh=-16, rk=-6, dx=0.0,
+                   sa=172, sx=0.05, sy=0.2, so=0.0)  # staff held upright beside the body (not shielding it)
 
 
 def _pose(**overrides: float) -> Pose:
@@ -48,9 +54,22 @@ BLOCK_POSE = _pose(lean=-6, fs=70, fe=105, rs=55, re=115, fh=75, fk=-105)  # kne
 FALL_POSE = _pose(lean=-10, fs=150, fe=20, rs=120, re=30, fh=40, fk=-30, rh=0, rk=-10)
 DOWN_POSE = _pose(lean=0, fs=170, fe=10, rs=150, re=20, fh=25, fk=-50, rh=10, rk=-25)
 GETUP_POSE = _pose(lean=30, rh=60, rk=-110, fh=70, fk=-120, fs=50, fe=90, rs=40, re=110)
+TUCK_POSE = _pose(lean=55, fs=100, fe=125, rs=85, re=135, fh=125, fk=-150, rh=115, rk=-150)  # rolled into a ball
 DODGE_POSE = _pose(lean=-30, fs=60, fe=110, rs=45, re=120, fh=35, fk=-60, rh=-25, rk=-30)
 STAR_WIND = _pose(lean=-8, rs=-70, re=100, fs=70, fe=60)          # throwing hand cocked back
 STAR_THROW = _pose(lean=18, rs=92, re=5, fs=20, fe=120, dx=0.04)  # arm whips forward
+# Staff attacks. Horizontal sweeps are drawn side-on, so the staff slides from behind
+# the body to the front at a fixed height (what a horizontal swing looks like from the side).
+STAFF_SWIPE_WIND = _pose(lean=-8, sa=200, sx=-0.02, sy=-0.14, so=0.0)              # raised behind the head
+STAFF_SWIPE_EXT = _pose(lean=18, sa=100, sx=0.18, sy=0.07, so=0.22, dx=0.05)       # chopped down forward
+# Ground sweep: crouched, staff angled down so the tip skims the floor.
+STAFF_LOW_WIND = _pose(lean=30, rh=60, rk=-115, fh=60, fk=-120, sa=75, sx=-0.12, sy=0.3, so=-0.25)
+STAFF_LOW_EXT = _pose(lean=40, rh=65, rk=-130, fh=50, fk=-110, sa=74, sx=0.05, sy=0.27, so=0.40, dx=0.04)
+# High sweep: staff level at neck height, lower than the throwing stars, so you must duck deeper.
+STAFF_HIGH_WIND = _pose(lean=-4, sa=90, sx=-0.18, sy=-0.05, so=-0.25)
+STAFF_HIGH_EXT = _pose(lean=6, sa=90, sx=0.14, sy=-0.05, so=0.35, dx=0.04)
+STAFF_POKE_WIND = _pose(lean=-12, sa=91, sx=-0.12, sy=0.07, so=-0.25, dx=-0.06)    # pulled back
+STAFF_POKE_EXT = _pose(lean=22, sa=90, sx=0.22, sy=0.07, so=0.42, dx=0.14)         # lunging thrust
 KNOCKDOWN_TILT = 88.0  # degrees the body rotates backward when it falls
 
 
@@ -86,10 +105,11 @@ class AttackSpec:
     phases: Tuple[Phase, ...]
     unblockable: bool = False
     ranged: bool = False   # throws a projectile at the end of the strike phase instead of hitting
+    cue: str = ""          # warning shown during the wind-up ("JUMP!", "DUCK!", ...)
 
 
 def _attack(name, label, limb, target, damage, chip, min_depth, radius, wind, ext, t_wind, t_strike, t_hold, t_rec,
-            live_from=0.5, unblockable=False) -> AttackSpec:
+            live_from=0.5, unblockable=False, cue="") -> AttackSpec:
     return AttackSpec(name, label, limb, target, damage, chip, min_depth, radius, (
         Phase(wind, t_wind),
         # Only the later part of the strike motion is live, so a fist or foot swinging
@@ -97,7 +117,7 @@ def _attack(name, label, limb, target, damage, chip, min_depth, radius, wind, ex
         Phase(ext, t_strike, active=True, ease="out", active_from=live_from),
         Phase(ext, t_hold, active=True),
         Phase(GUARD, t_rec),
-    ), unblockable)
+    ), unblockable, cue=cue)
 
 
 ATTACKS: Dict[str, AttackSpec] = {a.name: a for a in (
@@ -108,13 +128,22 @@ ATTACKS: Dict[str, AttackSpec] = {a.name: a for a in (
     _attack("high_kick", "High Kick", "front_foot", "head", 14, 0.20, 0.80, 0.06, KICK_WIND, KICK_EXT,
             0.55, 0.16, 0.12, 0.55, live_from=0.75),
     _attack("low_sweep", "Low Sweep", "front_foot", "legs", 12, 1.0, 0.80, 0.065, SWEEP_WIND, SWEEP_EXT,
-            0.60, 0.20, 0.15, 0.55, live_from=0.3, unblockable=True),
+            0.60, 0.20, 0.15, 0.55, live_from=0.3, unblockable=True, cue="JUMP!"),
     AttackSpec("throwing_star", "Throwing Star", "rear_hand", "head", C.STAR_DAMAGE, 1.0, 0.0, C.STAR_RADIUS, (
         Phase(STAR_WIND, 0.5),
         Phase(STAR_THROW, 0.12, ease="out"),
         Phase(STAR_THROW, 0.10),
         Phase(GUARD, 0.40),
-    ), unblockable=True, ranged=True),
+    ), unblockable=True, ranged=True, cue="DUCK!"),
+    # Ninja Monk's staff. Blockable ones still chip through (block_chip).
+    _attack("staff_swipe", "Staff Swipe", "staff", "head", 12, 0.35, 0.82, 0.03, STAFF_SWIPE_WIND,
+            STAFF_SWIPE_EXT, 0.50, 0.15, 0.10, 0.45, live_from=0.45),
+    _attack("staff_ground", "Ground Sweep", "staff", "legs", 12, 1.0, 0.80, 0.03, STAFF_LOW_WIND,
+            STAFF_LOW_EXT, 0.55, 0.22, 0.12, 0.50, live_from=0.3, unblockable=True, cue="JUMP!"),
+    _attack("staff_high", "High Sweep", "staff", "head", 14, 0.35, 0.80, 0.03, STAFF_HIGH_WIND,
+            STAFF_HIGH_EXT, 0.55, 0.22, 0.12, 0.50, live_from=0.3, cue="DUCK LOW!"),
+    _attack("staff_poke", "Staff Poke", "staff", "torso", 12, 0.35, 0.90, 0.03, STAFF_POKE_WIND,
+            STAFF_POKE_EXT, 0.60, 0.12, 0.15, 0.50, live_from=0.4, cue="JUMP BACK!"),
 )}
 
 
@@ -204,9 +233,11 @@ class ShadowEnemy:
         self.block_t = 0.0
         self.dodge_t = 0.0
         self.dodge_cooldown = 0.0
+        self.rolling = False
+        self.spin = 0.0          # roll rotation (degrees, backward)
         self._landed = False
         self._thrown: List[Tuple[Vec, Vec]] = []
-        self._reach = {name: self._strike_offset(spec) for name, spec in ATTACKS.items()}
+        self._reach = {name: self._strike_offset(ATTACKS[name]) for name in boss["attack_weights"]}
         glow_r = max(8, int(self.H * 0.09))
         self._glow = _make_glow(glow_r, (255, 50, 30))
         self._shadow = pygame.Surface((int(self.H * 0.5), int(self.H * 0.06)), pygame.SRCALPHA)
@@ -233,19 +264,44 @@ class ShadowEnemy:
         shoulder = _add(hip, spine, TORSO * H)
         r_shoulder = (shoulder[0] - f * 0.02 * H, shoulder[1])
         head = _add(shoulder, spine, HEAD_OFFSET * H)
-        f_elbow = _add(shoulder, _dir(p["fs"], f), UPPER_ARM * H)
-        f_hand = _add(f_elbow, _dir(p["fs"] + p["fe"], f), FOREARM * H)
-        r_elbow = _add(r_shoulder, _dir(p["rs"], f), UPPER_ARM * H)
-        r_hand = _add(r_elbow, _dir(p["rs"] + p["re"], f), FOREARM * H)
+        staff = None
+        if self.boss.get("staff"):
+            d = _dir(p["sa"], f)
+            grip = (shoulder[0] + f * p["sx"] * H, shoulder[1] + p["sy"] * H)
+            centre = _add(grip, d, p["so"] * H)
+            staff = (_add(centre, d, -STAFF_LEN * H / 2), _add(centre, d, STAFF_LEN * H / 2))
+            f_elbow, f_hand = self._reach_for(shoulder, _add(grip, d, STAFF_HAND_GAP * H))
+            r_elbow, r_hand = self._reach_for(r_shoulder, _add(grip, d, -STAFF_HAND_GAP * H))
+        else:
+            f_elbow = _add(shoulder, _dir(p["fs"], f), UPPER_ARM * H)
+            f_hand = _add(f_elbow, _dir(p["fs"] + p["fe"], f), FOREARM * H)
+            r_elbow = _add(r_shoulder, _dir(p["rs"], f), UPPER_ARM * H)
+            r_hand = _add(r_elbow, _dir(p["rs"] + p["re"], f), FOREARM * H)
         off = lambda v: (hip[0] + v[0], hip[1] + v[1])  # noqa: E731
         roff = lambda v: (r_hip[0] + v[0], r_hip[1] + v[1])  # noqa: E731
-        return {
+        sk = {
             "hip": hip, "shoulder": shoulder, "head": head, "spine": spine,
             "f_elbow": f_elbow, "f_hand": f_hand,
             "r_hip": r_hip, "r_shoulder": r_shoulder, "r_elbow": r_elbow, "r_hand": r_hand,
             "f_knee": off(fk), "f_ankle": off(fa), "f_toe": off(ft),
             "r_knee": roff(rk), "r_ankle": roff(ra), "r_toe": roff(rt),
         }
+        if staff:
+            sk["staff_back"], sk["staff_tip"] = staff
+        return sk
+
+    def _reach_for(self, shoulder: Vec, target: Vec) -> Tuple[Vec, Vec]:
+        """Two-bone arm IK: (elbow, hand) reaching from the shoulder toward target, elbow bent downward."""
+        a, b = UPPER_ARM * self.H, FOREARM * self.H
+        dx, dy = target[0] - shoulder[0], target[1] - shoulder[1]
+        dist = max(abs(a - b) + 1e-3, min(a + b - 1e-3, math.hypot(dx, dy)))
+        base = math.atan2(dy, dx)
+        bend = math.acos(max(-1.0, min(1.0, (a * a + dist * dist - b * b) / (2 * a * dist))))
+        elbows = [(shoulder[0] + a * math.cos(base + s * bend), shoulder[1] + a * math.sin(base + s * bend))
+                  for s in (1, -1)]
+        elbow = max(elbows, key=lambda e: e[1])
+        hand = (shoulder[0] + dist * math.cos(base), shoulder[1] + dist * math.sin(base))
+        return elbow, hand
 
     def _apply_tilt(self, sk: Dict[str, Vec]) -> Dict[str, Vec]:
         """Rotate the whole body backward around its feet (used for knockdowns)."""
@@ -264,12 +320,33 @@ class ShadowEnemy:
                 out[k] = (px + dx * ca + dy * sa, py - dx * sa + dy * ca - lift)
         return out
 
+    def _apply_spin(self, sk: Dict[str, Vec]) -> Dict[str, Vec]:
+        """Backward roll: rotate the curled-up body around its middle, kept touching the floor."""
+        if self.spin < 0.01 or self.spin > 359.99:
+            return sk
+        a = math.radians(self.spin) * self.facing
+        ca, sa = math.cos(a), math.sin(a)
+        cx = (sk["hip"][0] + sk["shoulder"][0]) * 0.5
+        cy = (sk["hip"][1] + sk["shoulder"][1]) * 0.5
+        out = {}
+        for k, (x, y) in sk.items():
+            if k == "spine":
+                out[k] = (x * ca + y * sa, -x * sa + y * ca)
+            else:
+                dx, dy = x - cx, y - cy
+                out[k] = (cx + dx * ca + dy * sa, cy - dx * sa + dy * ca)
+        lowest = max(y for k, (x, y) in out.items() if k != "spine") + 0.04 * self.H
+        shift = self.ground_y - lowest  # roll along the floor: lowest point touches the ground
+        return {k: (v if k == "spine" else (v[0], v[1] + shift)) for k, v in out.items()}
+
     @staticmethod
     def _limb_end(sk: Dict[str, Vec], limb: str) -> Vec:
         if limb == "front_hand":
             return sk["f_hand"]
         if limb == "rear_hand":
             return sk["r_hand"]
+        if limb == "staff":
+            return sk["staff_tip"]
         a, t = sk["f_ankle"], sk["f_toe"]
         return ((a[0] + t[0]) * 0.5, (a[1] + t[1]) * 0.5)
 
@@ -298,6 +375,38 @@ class ShadowEnemy:
             Capsule(self.sk["hip"], self.sk["shoulder"], 0.08 * self.H),
             Circle(self.sk["head"], HEAD_R * self.H * 1.1),
         ]
+
+    def kick_targets(self) -> List[Tuple[str, object]]:
+        """Hurtboxes a kick can land on, labelled 'head', 'feet' or 'torso' (in priority order)."""
+        if not self.can_be_hit:
+            return []
+        sk, H = self.sk, self.H
+        out = [("head", Circle(sk["head"], HEAD_R * H * 1.1))]
+        for p in ("f", "r"):
+            knee, ankle, toe = sk[p + "_knee"], sk[p + "_ankle"], sk[p + "_toe"]
+            shin_mid = ((knee[0] + ankle[0]) * 0.5, (knee[1] + ankle[1]) * 0.5)
+            out.append(("feet", Capsule(shin_mid, ankle, 0.04 * H)))
+            out.append(("feet", Capsule(ankle, toe, 0.04 * H)))
+        out.append(("torso", Capsule(sk["hip"], sk["shoulder"], 0.08 * H)))
+        return out
+
+    def staff_collider(self) -> Optional[Capsule]:
+        """The staff itself, which the player can punch or kick to parry."""
+        if not self.can_be_hit or "staff_tip" not in self.sk:
+            return None
+        return Capsule(self.sk["staff_back"], self.sk["staff_tip"], STAFF_R * self.H * 1.6)
+
+    def staff_struck(self) -> str:
+        """Player hit the staff. Mid-attack it's a parry (attack cancelled, monk staggered),
+        otherwise the staff just gets knocked aside. Returns 'parry' or 'deflect'."""
+        if self.state is EnemyState.ATTACK:
+            self.state = EnemyState.STUNNED
+            self.attack = None
+            self.stun_t = C.STAFF_PARRY_STUN
+            self.vx = -self.facing * C.ENEMY_KNOCKBACK * self.H * 0.6
+            return "parry"
+        self.x -= self.facing * 0.03 * self.H
+        return "deflect"
 
     def center(self) -> Vec:
         h, s = self.sk["hip"], self.sk["shoulder"]
@@ -346,8 +455,12 @@ class ShadowEnemy:
         self.vx = -self.facing * C.ENEMY_KNOCKBACK * self.H
         return "stun"
 
-    def take_kick(self, damage: float) -> str:
-        """Returns 'ko', 'knockdown', 'blocked' or 'none'. An unblocked kick knocks the shadow down."""
+    def take_kick(self, damage: float, part: str = "torso") -> str:
+        """Returns 'ko', 'knockdown', 'knockback', 'blocked' or 'none'.
+
+        An unblocked kick to the head or feet knocks the boss down; one to the body
+        only knocks it back.
+        """
         if not self.can_be_hit:
             return "none"
         blocked = (self.state in (EnemyState.IDLE, EnemyState.APPROACH)
@@ -362,6 +475,12 @@ class ShadowEnemy:
             self.block_t = 0.35
             self.x -= self.facing * 0.03 * self.H
             return "blocked"
+        if part == "torso":
+            self.state = EnemyState.STUNNED
+            self.attack = None
+            self.stun_t = C.ENEMY_STUN_TIME
+            self.vx = -self.facing * C.ENEMY_KICK_KNOCKBACK * self.H
+            return "knockback"
         self.state = EnemyState.KNOCKDOWN
         self.attack = None
         self.down_t = 0.0
@@ -375,9 +494,14 @@ class ShadowEnemy:
                 or self.dodge_cooldown > 0 or random.random() >= self.boss["dodge_chance"]):
             return False
         self.state = EnemyState.DODGE
-        self.dodge_t = C.ENEMY_DODGE_TIME
-        self.dodge_cooldown = C.ENEMY_DODGE_COOLDOWN
-        self.vx = -self.facing * C.ENEMY_DODGE_SPEED * self.H
+        self.dodge_cooldown = self.boss["dodge_cooldown"]
+        self.rolling = random.random() < self.boss["roll_chance"]
+        if self.rolling:
+            self.dodge_t = C.ENEMY_ROLL_TIME
+            self.vx = -self.facing * C.ENEMY_ROLL_SPEED * self.H
+        else:
+            self.dodge_t = C.ENEMY_DODGE_TIME
+            self.vx = -self.facing * C.ENEMY_DODGE_SPEED * self.H
         return True
 
     def pop_thrown(self) -> List[Tuple[Vec, Vec]]:
@@ -510,10 +634,18 @@ class ShadowEnemy:
             target = self._update_knockdown(dt)
         elif self.state is EnemyState.DODGE:
             self.x += self.vx * dt
-            self.vx *= math.exp(-6.0 * dt)
             self.dodge_t -= dt
-            target = DODGE_POSE
+            if self.rolling:
+                self.vx *= math.exp(-1.5 * dt)
+                u = 1.0 - max(0.0, self.dodge_t) / C.ENEMY_ROLL_TIME
+                self.spin = 360.0 * _ease(min(1.0, u / 0.85), "inout")  # finish the turn, then stand
+                target = TUCK_POSE if u < 0.8 else GUARD
+            else:
+                self.vx *= math.exp(-6.0 * dt)
+                target = DODGE_POSE
             if self.dodge_t <= 0:
+                self.spin = 0.0
+                self.rolling = False
                 self._enter_idle(random.uniform(0.1, 0.3))
         elif self.block_t > 0:
             target = BLOCK_POSE
@@ -548,7 +680,7 @@ class ShadowEnemy:
         if target is not None:
             k = 1.0 - math.exp(-dt * C.ENEMY_POSE_BLEND)
             self.pose = lerp_pose(self.pose, target, k)
-        self.sk = self._apply_tilt(self._skeleton(self.pose, self.x, self.facing))
+        self.sk = self._apply_spin(self._apply_tilt(self._skeleton(self.pose, self.x, self.facing)))
         if self.state is EnemyState.ATTACK:
             cur = self._limb_end(self.sk, self.attack.limb)
             # Sweep only between live frames, never back into the wind-up.
@@ -624,8 +756,13 @@ class ShadowEnemy:
                     if grow:
                         pygame.draw.polygon(surf, color, part[1], int(grow * 2))
 
-        paint(back + front, self.boss["rim"], rim)
+        staff = [("cap", sk["staff_back"], sk["staff_tip"], STAFF_R)] if "staff_tip" in sk else []
+        paint(back + staff + front, self.boss["rim"], rim)
         paint(back, C.ENEMY_FLASH if flashing else C.ENEMY_BACK, 0)
+        if staff:
+            paint(staff, C.ENEMY_FLASH if flashing else C.STAFF_COLOR, 0)
+            for end in ("staff_back", "staff_tip"):  # metal end caps
+                pygame.draw.circle(surf, C.STAFF_CAP_COLOR, _ipt(sk[end]), max(2, int(STAFF_R * H * 1.3)))
         paint(front, C.ENEMY_FLASH if flashing else C.ENEMY_BODY, 0)
 
         # Eye: white normally, red while attacking.
@@ -645,13 +782,12 @@ class ShadowEnemy:
             glow.fill((int(255 * (0.4 + 0.6 * progress)),) * 3, special_flags=pygame.BLEND_MULT)
             p = self._limb_end(sk, self.attack.limb)
             surf.blit(glow, glow.get_rect(center=_ipt(p)), special_flags=pygame.BLEND_ADD)
-            if self.attack.unblockable and int(self.anim_t * 8) % 2 == 0:
-                if self.attack.ranged:
-                    label = self.font.render("DUCK!", True, (255, 220, 80))
-                    pos = (int(self.x), int(sk["head"][1] - 0.13 * H))
-                else:
-                    label = self.font.render("JUMP!", True, (255, 220, 80))
+            if self.attack.cue and int(self.anim_t * 8) % 2 == 0:
+                label = self.font.render(self.attack.cue, True, (255, 220, 80))
+                if self.attack.target == "legs":
                     pos = (int(self.x), int(self.ground_y - 0.55 * H))
+                else:
+                    pos = (int(self.x), int(sk["head"][1] - 0.13 * H))
                 surf.blit(label, label.get_rect(center=pos))
 
     def _draw_headband(self, surf: pygame.Surface, sk: Dict[str, Vec], color) -> None:
@@ -675,6 +811,12 @@ class ShadowEnemy:
             return
         for hb in self.hurtboxes():
             draw_shape(surf, hb, (255, 80, 255))
+        for name, hb in self.kick_targets():
+            if name == "feet":  # kick here (or the head) for a knockdown
+                draw_shape(surf, hb, (255, 160, 220), 1)
+        staff = self.staff_collider()
+        if staff:
+            draw_shape(surf, staff, (255, 200, 80))
         strike = self.strike_collider()
         if strike:
             draw_shape(surf, strike, (255, 40, 40), 0)

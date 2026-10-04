@@ -352,6 +352,8 @@ class Game:
         if not enemy.can_be_hit or not player.in_range(C.PLAYER_PUNCH_MIN_DEPTH):
             return
         hurtboxes = enemy.hurtboxes()
+        kick_targets = enemy.kick_targets()
+        staff = enemy.staff_collider()
         ec = enemy.center()
         strikes = [("punch", side, c, player.fist_vel[side], player.fist_speed(side))
                    for side, c in player.fists().items()]
@@ -365,18 +367,29 @@ class Game:
                 continue
             if vx * (ec[0] - limb.center[0]) + vy * (ec[1] - limb.center[1]) <= 0:
                 continue  # moving away from the enemy (pulling back), not a strike
-            if not any(intersects(limb, hb) for hb in hurtboxes):
+            if kick:
+                # Head and feet take priority: those are the hits that knock the boss down.
+                part = next((name for name, hb in kick_targets if intersects(limb, hb)
+                             and (name != "feet" or speed >= threshold * C.LOW_KICK_SPEED_FACTOR)), None)
+            else:
+                part = "body" if any(intersects(limb, hb) for hb in hurtboxes) else None
+            if part is None:
+                if staff is not None and intersects(limb, staff):  # missed the body but hit the staff
+                    cooldowns[side] = C.KICK_COOLDOWN if kick else C.PUNCH_COOLDOWN
+                    self._strike_staff(limb.center)
+                    return
                 continue
 
             if enemy.try_dodge():
                 cooldowns[side] = C.KICK_COOLDOWN if kick else C.PUNCH_COOLDOWN
-                self.effects.text("DODGED", (ec[0], ec[1] - enemy.H * 0.4), (200, 200, 255), 44)
+                self.effects.text("ROLLED AWAY" if enemy.rolling else "DODGED", (ec[0], ec[1] - enemy.H * 0.4),
+                                  (200, 200, 255), 44)
                 return
             power = min(1.0, (speed - threshold) / threshold)
             lo, hi = (C.KICK_DAMAGE_MIN, C.KICK_DAMAGE_MAX) if kick else (C.PUNCH_DAMAGE_MIN, C.PUNCH_DAMAGE_MAX)
             damage = round(lo + (hi - lo) * power)
             cooldowns[side] = C.KICK_COOLDOWN if kick else C.PUNCH_COOLDOWN
-            result = enemy.take_kick(damage) if kick else enemy.take_hit(damage)
+            result = enemy.take_kick(damage, part) if kick else enemy.take_hit(damage)
             pos = limb.center
 
             if result == "blocked":
@@ -392,7 +405,8 @@ class Game:
                 self.effects.shake((10 if kick else 6) + 6 * power)
                 self.sfx.punch(0.85 + 0.15 * power if kick else 0.7 + 0.3 * power)
             if result == "knockdown":
-                self.effects.text("KNOCKDOWN!", (ec[0], ec[1] - enemy.H * 0.45), (255, 200, 80), 64, 1.2)
+                how = "HEAD KICK!" if part == "head" else "LEG SWEEP!"
+                self.effects.text(f"{how} KNOCKDOWN!", (ec[0], ec[1] - enemy.H * 0.45), (255, 200, 80), 60, 1.2)
             elif result == "ko":
                 sk = enemy.sk
                 self.effects.smoke([sk[k] for k in ("head", "shoulder", "hip", "f_hand", "r_hand",
@@ -402,6 +416,17 @@ class Game:
                 self.effects.shake(18)
             if not enemy.can_be_hit:
                 return
+
+    def _strike_staff(self, pos) -> None:
+        if self.enemy.staff_struck() == "parry":
+            self.effects.burst(pos, (255, 220, 120), 26, 520)
+            self.effects.text("PARRY!", (pos[0], pos[1] - 40), (255, 220, 120), 56)
+            self.effects.shake(8)
+            self.sfx.punch(0.8)
+        else:
+            self.effects.burst(pos, (200, 170, 120), 12, 300)
+            self.effects.text("STAFF BLOCK", (pos[0], pos[1] - 40), (220, 190, 140), 36)
+            self.sfx.punch(0.4)
 
     def _strike_contact(self, spec, strike):
         """Geometric contact of the swept strike. Forearms are tested before head/torso so blocks always win."""
@@ -515,7 +540,7 @@ class Game:
             "Stand about 6 ft (2 m) back with your whole body in view.",
             "Punch and kick sideways at the boss.  Raise your forearms to block.",
             "Jump over low sweeps.  Duck under throwing stars.  Step back to get out of range.",
-            "Beat the Shadow, then the Shadow Ninja.",
+            "Hit the monk's staff mid-attack to parry it.  Beat all three bosses!",
         ]
         for i, tip in enumerate(tips):
             self._text(tip, (w / 2, h * 0.67 + i * 30), self.font, (210, 210, 220), "center")

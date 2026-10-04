@@ -65,6 +65,7 @@ KICK_SPEED_THRESHOLD = 4.0        # torso units / second for a foot to count as 
 KICK_COOLDOWN = 0.5
 KICK_DAMAGE_MIN = 8
 KICK_DAMAGE_MAX = 16
+LOW_KICK_SPEED_FACTOR = 1.3       # kicks to the boss's feet need this much more speed (so steps don't count)
 
 # --- Player defence ----------------------------------------------------------
 PLAYER_MAX_HP = 100
@@ -90,7 +91,9 @@ ENEMY_GETUP_TIME = 0.6            # ...and getting back up
 ENEMY_KNOCKDOWN_KNOCKBACK = 1.4   # body heights / second
 ENEMY_DODGE_TIME = 0.35           # how long a dodge lasts (can't be hit meanwhile)
 ENEMY_DODGE_SPEED = 2.2           # body heights / second, backward
-ENEMY_DODGE_COOLDOWN = 1.0        # minimum time between dodges
+ENEMY_ROLL_TIME = 0.6             # backward roll (ninja): duration...
+ENEMY_ROLL_SPEED = 1.6            # ...and speed in body heights / second
+ENEMY_KICK_KNOCKBACK = 1.8        # body kick: pushed back (body heights / second) but stays on its feet
 ENEMY_POSE_BLEND = 16.0
 
 # --- Bosses (fought in order) -------------------------------------------------
@@ -101,6 +104,8 @@ BOSSES = [
         "name": "SHADOW",
         "max_hp": 200,
         "dodge_chance": 0.10,
+        "roll_chance": 0.0,       # fraction of dodges done as a backward roll instead of a hop back
+        "dodge_cooldown": 1.0,    # minimum seconds between dodges
         "kick_block_chance": 0.30,
         "attack_speed": 1.0,      # > 1 = faster attacks
         "idle_min": 0.25,         # pause between attacks (shrinks further as the boss gets hurt)
@@ -112,7 +117,9 @@ BOSSES = [
     {
         "name": "SHADOW NINJA",
         "max_hp": 300,
-        "dodge_chance": 0.35,
+        "dodge_chance": 0.55,
+        "roll_chance": 0.6,
+        "dodge_cooldown": 0.7,
         "kick_block_chance": 0.35,
         "attack_speed": 1.1,
         "idle_min": 0.25,
@@ -122,7 +129,28 @@ BOSSES = [
         "rim": (170, 40, 55),
         "headband": (200, 30, 40),
     },
+    {
+        "name": "NINJA MONK",
+        "max_hp": 400,
+        "dodge_chance": 0.35,
+        "roll_chance": 0.3,
+        "dodge_cooldown": 0.8,
+        "kick_block_chance": 0.40,
+        "attack_speed": 1.1,
+        "idle_min": 0.25,
+        "idle_max": 0.6,
+        "attack_weights": {"staff_swipe": 2.5, "staff_ground": 2.0, "staff_high": 2.0, "staff_poke": 2.0,
+                           "high_kick": 1.0},
+        "rim": (235, 150, 40),
+        "headband": None,
+        "staff": True,            # fights with a staff (arms hold it; it has its own hitbox)
+    },
 ]
+
+# --- Staff (Ninja Monk) ------------------------------------------------------------
+STAFF_PARRY_STUN = 0.5            # seconds the monk staggers when you hit his staff mid-attack
+STAFF_COLOR = (42, 26, 14)
+STAFF_CAP_COLOR = (190, 150, 70)
 
 # --- Throwing stars -----------------------------------------------------------
 STAR_SPEED = 1.25                 # body heights / second
