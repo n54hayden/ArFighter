@@ -303,6 +303,8 @@ class ShadowEnemy:
         self._tele_events: List[Tuple[str, Vec]] = []
         self._spell_glows = {k: _make_glow(max(8, int(height * 0.07)), c) for k, c in SPELL_COLORS.items()}
         self._landed = False
+        self.death_t = 0.0
+        self._fade_layer: Optional[pygame.Surface] = None
         self._thrown: List[Tuple[Vec, Vec]] = []
         moves = list(boss["attack_weights"]) + (["sword_flip_slash"] if boss.get("flip_chance") else [])
         self._reach = {name: self._strike_offset(ATTACKS[name]) for name in moves}
@@ -559,8 +561,7 @@ class ShadowEnemy:
         self.hp = max(0.0, self.hp - damage)
         self.flash_t = 0.1
         if self.hp <= 0:
-            self.state = EnemyState.DEAD
-            self.attack = None
+            self._die()
             return "ko"
         if self.stun_immunity > 0 or self.state is EnemyState.STUNNED:
             return "armor"
@@ -570,6 +571,23 @@ class ShadowEnemy:
         self.stun_pose = STUN_POSE
         self.vx = -self.facing * C.ENEMY_KNOCKBACK * self.H
         return "stun"
+
+    def _die(self) -> None:
+        """K.O.: knocked onto his back, then fades away (see _update_death)."""
+        self.state = EnemyState.DEAD
+        self.attack = None
+        self.death_t = 0.0
+        self.spin = self.flip_angle = self.lift = 0.0
+        self.visible = True
+        self._landed = False
+        self.vx = -self.facing * C.ENEMY_KNOCKDOWN_KNOCKBACK * self.H * 0.7
+
+    @property
+    def fade(self) -> float:
+        """1 = fully visible; drops to 0 once the K.O.'d body has lain on the floor for a moment."""
+        if self.state is not EnemyState.DEAD:
+            return 1.0
+        return max(0.0, min(1.0, 1.0 - (self.death_t - C.ENEMY_DEATH_FADE_START) / C.ENEMY_DEATH_FADE_TIME))
 
     def take_kick(self, damage: float, part: str = "torso") -> str:
         """Returns 'ko', 'knockdown', 'knockback', 'blocked' or 'none'.
@@ -584,8 +602,7 @@ class ShadowEnemy:
         self.hp = max(0.0, self.hp - (damage * C.ENEMY_KICK_BLOCK_DAMAGE if blocked else damage))
         self.flash_t = 0.1
         if self.hp <= 0:
-            self.state = EnemyState.DEAD
-            self.attack = None
+            self._die()
             return "ko"
         if blocked:
             self.block_t = 0.35
@@ -744,15 +761,15 @@ class ShadowEnemy:
         self.stun_immunity = max(0.0, self.stun_immunity - dt)
         self.block_t = max(0.0, self.block_t - dt)
         self.dodge_cooldown = max(0.0, self.dodge_cooldown - dt)
-        if self.state is EnemyState.DEAD:
-            return
 
         paused = not (player.calibrated and player.tracked)
         target: Optional[Pose] = None
-        if self.boss.get("teleports") and not paused:
+        if self.boss.get("teleports") and not paused and self.state is not EnemyState.DEAD:
             self._track_pressure(dt, player)
 
-        if self.state is EnemyState.ATTACK:
+        if self.state is EnemyState.DEAD:
+            target = self._update_death(dt)
+        elif self.state is EnemyState.ATTACK:
             self._update_attack(dt, player, paused)
         elif self.state is EnemyState.STUNNED:
             self.x += self.vx * dt
@@ -929,6 +946,35 @@ class ShadowEnemy:
                 out[k] = (cx + dx * ca + dy * sa, cy - dx * sa + dy * ca - self.lift)
         return out
 
+    def _update_death(self, dt: float) -> Pose:
+        """Fall backward like a knockdown, but stay down (and fade, see `fade`)."""
+        self.death_t += dt
+        self.x += self.vx * dt
+        self.vx *= math.exp(-5.0 * dt)
+        fall, t = C.ENEMY_FALL_TIME, self.death_t
+        if t < fall:
+            self.tilt = KNOCKDOWN_TILT * (t / fall) ** 2
+            return FALL_POSE
+        if t - dt < fall:  # first frame on the floor: the game adds the impact
+            self._landed = True
+        bounce = t - fall
+        self.tilt = KNOCKDOWN_TILT - (8.0 * math.sin(math.pi * bounce / 0.2) if bounce < 0.2 else 0.0)
+        return DOWN_POSE
+
+    def walk_in(self, dt: float, target_x: float, speed: float) -> None:
+        """Boss intro: walk toward target_x without any AI (he can't attack yet)."""
+        self.anim_t += dt
+        diff = target_x - self.x
+        step = math.copysign(min(abs(diff), speed * dt), diff)
+        self.x += step
+        if abs(step) > 1e-6:
+            self.walk_phase += dt * 10.0
+            target = self._walk_pose()
+        else:
+            target = self._idle_pose()
+        self.pose = lerp_pose(self.pose, target, 1.0 - math.exp(-dt * C.ENEMY_POSE_BLEND))
+        self.sk = self._skeleton(self.pose, self.x, self.facing)
+
     def _update_knockdown(self, dt: float) -> Pose:
         """Fall backward, lie on the floor, then get back up."""
         self.down_t += dt
@@ -956,8 +1002,20 @@ class ShadowEnemy:
 
     # --- rendering -----------------------------------------------------------
     def draw(self, surf: pygame.Surface) -> None:
-        if self.state is EnemyState.DEAD or not self.visible:
+        fade = self.fade
+        if fade <= 0.0 or not self.visible:
             return
+        if fade < 1.0:  # dissolving after a K.O.: draw onto a transparent layer, then blend it in
+            if self._fade_layer is None or self._fade_layer.get_size() != surf.get_size():
+                self._fade_layer = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+            self._fade_layer.fill((0, 0, 0, 0))
+            self._draw_body(self._fade_layer)
+            self._fade_layer.set_alpha(int(255 * fade))
+            surf.blit(self._fade_layer, (0, 0))
+            return
+        self._draw_body(surf)
+
+    def _draw_body(self, surf: pygame.Surface) -> None:
         sk, H = self.sk, self.H
         shadow_x = self.x - self.facing * 0.45 * H * math.sin(math.radians(self.tilt))
         surf.blit(self._shadow, self._shadow.get_rect(center=(int(shadow_x), int(self.ground_y))))

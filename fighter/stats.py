@@ -13,6 +13,10 @@ Enemy attacks (melee strikes, projectiles, spell hazards...) are tracked generic
 hazards, like an icicle storm, is one attack with several parts), reports hits, blocks
 or "couldn't be judged" (player untracked), and closes each part when it expires. The
 outcome is decided once, when the last part closes: hit > void > blocked > dodged.
+
+Combos: landed hits less than COMBO_WINDOW apart chain together; a gap or getting hit
+breaks the chain. The Fitness Score and grades are a game score built from these stats
+(weights and targets in config), not a physiological measurement.
 """
 from __future__ import annotations
 
@@ -25,6 +29,13 @@ from . import config as C
 def percent(part: float, whole: float) -> float:
     """part / whole as a percentage; 0 when there is nothing to divide by."""
     return 100.0 * part / whole if whole > 0 else 0.0
+
+
+def rank(score: Optional[float]) -> str:
+    """Letter grade for a 0-100 score ('-' when there's nothing to grade)."""
+    if score is None:
+        return "-"
+    return next(letter for threshold, letter in C.SCORE_RANKS if score >= threshold)
 
 
 def format_duration(seconds: float) -> str:
@@ -72,6 +83,9 @@ class FightStats:
         self.damage_taken = 0.0
         self.current_dodge_streak = 0
         self.longest_dodge_streak = 0
+        self.combo = 0                      # current chain of landed hits
+        self.best_combo = 0
+        self.last_hit_at: Optional[float] = None
 
         self._motions: Dict[Tuple[str, str], _Motion] = {}
         self._pending: Dict[int, _PendingAttack] = {}
@@ -129,6 +143,24 @@ class FightStats:
             self.punches_landed += 1
         return True
 
+    def combo_hit(self, now: float) -> int:
+        """A new landed hit (call once per limb_landed() that returned True). Returns the combo length."""
+        if not self.active:
+            return 0
+        if self.last_hit_at is None or now - self.last_hit_at > C.COMBO_WINDOW:
+            self.combo = 0
+        self.combo += 1
+        self.last_hit_at = now
+        self.best_combo = max(self.best_combo, self.combo)
+        return self.combo
+
+    def combo_alive(self, now: float) -> bool:
+        return self.combo > 0 and self.last_hit_at is not None and now - self.last_hit_at <= C.COMBO_WINDOW
+
+    def break_combo(self) -> None:
+        self.combo = 0
+        self.last_hit_at = None
+
     def record_damage_dealt(self, amount: float) -> None:
         if self.active and amount > 0:
             self.damage_dealt += amount
@@ -148,6 +180,7 @@ class FightStats:
         if not self.active:
             return
         self.damage_taken += max(0.0, damage)
+        self.break_combo()  # getting hit ends your combo
         a = self._pending.get(attack_id)
         if a is not None:
             a.hit = True
@@ -244,3 +277,40 @@ class FightStats:
         hours = self.duration(now) / 3600.0
         rate = self.calories(now) / hours if hours > 0 else 0.0
         return rate if math.isfinite(rate) else 0.0
+
+    # --- fitness score ------------------------------------------------------------
+    @property
+    def won(self) -> bool:
+        return self.result in ("VICTORY", "CHAMPION")
+
+    def category_scores(self, now: Optional[float] = None) -> Dict[str, Optional[float]]:
+        """0-100 per category; None when there was nothing to judge (e.g. no attacks faced)."""
+        thrown = self.punches_thrown + self.kicks_thrown
+        minutes = self.duration(now) / 60.0
+        actions = thrown + self.enemy_attacks_dodged
+        return {
+            "accuracy": percent(self.total_hits, thrown) if thrown else None,
+            "dodging": percent(self.enemy_attacks_dodged + 0.5 * self.enemy_attacks_blocked,
+                               self.enemy_attacks_faced) if self.enemy_attacks_faced else None,
+            "activity": min(100.0, actions / minutes / C.SCORE_ACTIVITY_TARGET * 100.0) if minutes > 0 else None,
+            "combos": min(100.0, self.best_combo / C.SCORE_COMBO_TARGET * 100.0),
+        }
+
+    def performance(self, now: Optional[float] = None) -> float:
+        """Weighted 0-100 blend of the category scores that could be judged."""
+        scores = self.category_scores(now)
+        judged = {k: v for k, v in scores.items() if v is not None}
+        weight = sum(C.SCORE_WEIGHTS[k] for k in judged)
+        return sum(v * C.SCORE_WEIGHTS[k] for k, v in judged.items()) / weight if weight > 0 else 0.0
+
+    def overall_rank(self, now: Optional[float] = None) -> str:
+        return rank(self.performance(now))
+
+    def fitness_score(self, now: Optional[float] = None) -> int:
+        pts = C.SCORE_POINTS
+        score = (self.performance(now) * 40 + self.total_hits * pts["hit"]
+                 + self.enemy_attacks_dodged * pts["dodge"] + self.enemy_attacks_blocked * pts["block"]
+                 + self.best_combo * pts["best_combo"])
+        if self.won:
+            score += pts["win"] + self.health_remaining * pts["health"]
+        return int(round(score / 10.0)) * 10

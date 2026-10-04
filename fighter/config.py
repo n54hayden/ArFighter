@@ -14,6 +14,7 @@ WINDOW_TITLE = "AR Shadow Fighter"
 # --- Music -------------------------------------------------------------------
 MUSIC_DIR = "music"               # relative to ar_fighter.py; first .mp3/.ogg/.wav is the fight music
 MENU_MUSIC_DIR = "music/menu"     # first audio file here plays on the main menu
+                                  # (each boss can also have its own theme: see "music" in BOSSES)
 MUSIC_VOLUME = 0.6                # 0.0 - 1.0
 MUSIC_FADE_IN_MS = 500
 MUSIC_FADE_OUT_MS = 1200
@@ -23,11 +24,13 @@ SFX_DIR = "sound_effects"         # relative to ar_fighter.py
 SFX_VOLUME = 0.9                  # 0.0 - 1.0
 SFX_KEYWORDS = {                  # a file is used for a role if its name contains any keyword
     "bell": ("bell",),               # (roles are matched in this order and a file only fills one role)
+    "kick": ("kick",),
     "punch": ("punch", "impact", "hit"),
     "groan": ("disappoint", "groan", "boo", "aww"),  # defeat; before "cheer" so a "crowd ..." groan isn't the cheer
     "cheer": ("cheer", "crowd", "applause"),
     "throw": ("throw", "whoosh", "swish"),
 }
+SFX_POOLED_ROLES = ("punch", "kick", "throw")  # these use every matching file, picking one at random
 
 # --- Camera / pose thread ----------------------------------------------------
 # On this Mac, index 0 is the iPhone (Continuity Camera) when it's nearby and 1 is the
@@ -107,6 +110,8 @@ ENEMY_POSE_BLEND = 16.0
 BOSSES = [
     {
         "name": "SHADOW",
+        "title": "THE NAMELESS BRAWLER",          # shown in the boss intro
+        "music": "music/bosses/shadow",  # optional theme; falls back to the fight music
         "max_hp": 200,
         "dodge_chance": 0.10,
         "roll_chance": 0.0,       # fraction of dodges done as a backward roll instead of a hop back
@@ -121,6 +126,8 @@ BOSSES = [
     },
     {
         "name": "SHADOW NINJA",
+        "title": "THE SILENT BLADE",          # shown in the boss intro
+        "music": "music/bosses/shadow_ninja",  # optional theme; falls back to the fight music
         "max_hp": 300,
         "dodge_chance": 0.55,
         "roll_chance": 0.6,
@@ -136,6 +143,8 @@ BOSSES = [
     },
     {
         "name": "NINJA MONK",
+        "title": "MASTER OF THE IRON STAFF",          # shown in the boss intro
+        "music": "music/bosses/ninja_monk",  # optional theme; falls back to the fight music
         "max_hp": 400,
         "dodge_chance": 0.35,
         "roll_chance": 0.3,
@@ -152,6 +161,8 @@ BOSSES = [
     },
     {
         "name": "EGYPTIAN SOLDIER",
+        "title": "GUARDIAN OF THE SANDS",          # shown in the boss intro
+        "music": "music/bosses/egyptian_soldier",  # optional theme; falls back to the fight music
         "max_hp": 160,            # the least health, but the hardest hitter
         "dodge_chance": 0.25,
         "roll_chance": 0.0,
@@ -170,6 +181,8 @@ BOSSES = [
     },
     {
         "name": "MAGE",
+        "title": "THE ARCANE WARDEN",          # shown in the boss intro
+        "music": "music/bosses/mage",  # optional theme; falls back to the fight music
         "max_hp": 260,
         "dodge_chance": 0.15,
         "roll_chance": 0.0,
@@ -252,8 +265,38 @@ STAR_THROW_DISTANCE = 0.38        # boss backs off to this fraction of the scree
 
 # --- Flow ---------------------------------------------------------------------
 COUNTDOWN_SECONDS = 3
-SUMMARY_DELAY = 2.2               # seconds of K.O. / result banner before the Fight Summary appears
+SUMMARY_DELAY = 3.2               # seconds of K.O. / result banner before the Fight Summary appears
 SUMMARY_TALLY_TIME = 0.9          # numbers on the Fight Summary count up over this long
+
+# --- Boss intro (before the 3-2-1 countdown) ------------------------------------
+INTRO_WARNING_TIME = 1.4          # flashing WARNING / "<BOSS> APPROACHING"
+INTRO_TITLE_TIME = 1.6            # boss name and title (he walks in during both)
+
+# --- Combos --------------------------------------------------------------------
+COMBO_WINDOW = 1.5                # seconds allowed between landed hits to keep a combo going
+COMBO_WORDS = (                   # (minimum hits, shout, colour), best match first
+    (5, "UNSTOPPABLE!", (255, 120, 60)),
+    (4, "AMAZING!", (255, 220, 120)),
+    (3, "GREAT!", (120, 255, 160)),
+    (2, "NICE!", (255, 255, 255)),
+)
+
+# --- Dramatic K.O. ----------------------------------------------------------------
+KO_HITSTOP = 0.12                 # the world freezes for this long on the finishing blow...
+KO_SLOWMO_TIME = 1.1              # ...then runs in slow motion until this many seconds after it
+KO_SLOWMO_SCALE = 0.3
+ENEMY_DEATH_FADE_START = 1.2      # the K.O.'d boss lies still this long (game seconds)...
+ENEMY_DEATH_FADE_TIME = 0.8       # ...then fades away over this long
+
+# --- Fitness score (a game score built from your fight stats) -------------------
+SCORE_WEIGHTS = {"accuracy": 0.30, "dodging": 0.30, "activity": 0.25, "combos": 0.15}
+SCORE_ACTIVITY_TARGET = 30.0      # punches + kicks + dodges per minute that earns 100 for Activity
+SCORE_COMBO_TARGET = 6            # best combo that earns 100 for Combos
+SCORE_RANKS = ((90, "S"), (80, "A"), (65, "B"), (50, "C"), (0, "D"))
+SCORE_POINTS = {                  # Fitness Score = performance x 40 + these per stat
+    "hit": 50, "dodge": 100, "block": 40, "best_combo": 80,
+    "win": 1500, "health": 1000,  # win bonus, plus up to 1000 for health left (wins only)
+}
 
 # --- Fight Summary calorie estimate (rough: no body weight is measured) -------------
 CALORIE_MET = 6.0                 # metabolic equivalent for active fitness boxing

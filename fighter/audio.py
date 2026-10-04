@@ -1,4 +1,4 @@
-"""Music: a menu track and a fight track, each the first audio file found in its folder."""
+"""Music: menu, fight and optional per-boss tracks, each the first audio file found in its folder."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,8 +12,9 @@ AUDIO_EXTENSIONS = (".mp3", ".ogg", ".wav")
 
 
 class Music:
-    def __init__(self, folders: Dict[str, Path]):
-        """folders: track name ('fight', 'menu', ...) -> folder holding that track. Subfolders are not searched."""
+    def __init__(self, folders: Dict[str, Path], optional: Optional[Dict[str, Path]] = None):
+        """folders: track name ('fight', 'menu', ...) -> folder holding that track. Subfolders are not searched.
+        optional: more tracks (e.g. per-boss themes) that are skipped quietly when their folder is empty."""
         self.tracks: Dict[str, Path] = {}
         self.available = False
         self.muted = False
@@ -21,11 +22,13 @@ class Music:
         self._playing = False
         self._current: Optional[str] = None  # name of the track loaded in the mixer
 
-        for name, folder in folders.items():
+        optional = optional or {}
+        for name, folder in {**folders, **optional}.items():
             files = sorted(p for p in folder.glob("*") if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS) \
                 if folder.is_dir() else []
             if not files:
-                print(f"[music] no audio file in {folder}, no {name} music")
+                if name not in optional:
+                    print(f"[music] no audio file in {folder}, no {name} music")
                 continue
             try:
                 if not pygame.mixer.get_init():
@@ -37,8 +40,11 @@ class Music:
                 print(f"[music] could not load {files[0].name}: {exc}")
         self._current = None
 
-    def play(self, name: str) -> None:
-        """Loop the named track from the beginning. If it's already playing, leave it alone."""
+    def play(self, name: str, fallback: Optional[str] = None) -> None:
+        """Loop the named track (or `fallback` when that one doesn't exist) from the beginning.
+        If it's already playing, leave it alone."""
+        if name not in self.tracks and fallback is not None:
+            name = fallback
         track = self.tracks.get(name)
         if track is None:
             self.stop()

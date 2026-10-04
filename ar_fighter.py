@@ -3,12 +3,13 @@
 
 Run:   python ar_fighter.py [--camera 0] [--complexity 1] [--debug]
 
-Flow: menu -> 3 s countdown to get into position -> calibration -> bosses 1-5 in order
-(or pick any boss from Select Boss). After each fight a Fight Summary shows your stats,
-with Next Boss / Fight Again / Select Boss / Main Menu options.
+Flow: menu -> (first time: 3 s to get into position -> calibration) -> boss intro
+(WARNING, name and title, 3-2-1) -> fight -> workout summary with a Fitness Score, then
+Next Boss / Fight Again / Select Boss / Main Menu. Bosses 1-5 in order, or pick any boss
+from Select Boss.
 
 Controls:
-    Enter  start (menu) / choose an option (Fight Summary)
+    Enter  start (menu) / skip the boss intro / choose an option (Fight Summary)
     D      toggle hitbox / skeleton debug overlay
     R      restart the current fight (also Fight Again from the summary)
     C      recalibrate (stand ~6 ft / 2 m back, full body in view)
@@ -44,10 +45,12 @@ from fighter.player import SIDES, PlayerTracker
 from fighter.projectiles import ThrowingStar
 from fighter.spells import FireWall, GroundStrike, capsule_hits_rect, circle_hits_rect, make_fire_wall, \
     make_icicles, make_meteor
-from fighter.stats import FightStats, format_duration
+from fighter.stats import FightStats, format_duration, rank
 
-MODE_MENU, MODE_COUNTDOWN, MODE_CALIBRATE = "menu", "countdown", "calibrate"
+MODE_MENU, MODE_COUNTDOWN, MODE_CALIBRATE, MODE_INTRO = "menu", "countdown", "calibrate", "intro"
 MODE_FIGHT, MODE_OVER, MODE_SUMMARY = "fight", "over", "summary"
+RANK_COLORS = {"S": (255, 220, 90), "A": (120, 255, 160), "B": (110, 210, 255), "C": (255, 170, 90),
+               "D": (255, 90, 90), "-": (170, 170, 185)}
 
 
 class FramePacer:
@@ -95,6 +98,8 @@ class Game:
             self.screen = pygame.display.set_mode(self.size)
         self.world = pygame.Surface(self.size).convert()
         self._veil = pygame.Surface(self.size).convert()  # black, for dimming behind the menu
+        self._tint = pygame.Surface(self.size).convert()  # red, for the boss intro's WARNING
+        self._tint.fill((150, 0, 0))
         self.pacer = FramePacer(C.FPS)
 
         self.font_small = pygame.font.Font(None, 22)
@@ -103,6 +108,9 @@ class Game:
         self.font_menu = pygame.font.Font(None, 44)
         self.font_huge = pygame.font.Font(None, 150)
         self.font_stat = pygame.font.Font(None, 76)
+        self.font_row = pygame.font.Font(None, 30)
+        self.font_rank = pygame.font.Font(None, 120)
+        self.font_grade = pygame.font.Font(None, 62)
 
         self.camera = CameraThread(self.size, camera_index, complexity)
         self.camera.start()
@@ -113,7 +121,8 @@ class Game:
         here = Path(__file__).resolve().parent
         self.save_path = here / C.SAVE_FILE
         self.checkpoint = self._load_checkpoint()  # furthest boss reached by beating the one before
-        self.music = Music({"fight": here / C.MUSIC_DIR, "menu": here / C.MENU_MUSIC_DIR})
+        self.music = Music({"fight": here / C.MUSIC_DIR, "menu": here / C.MENU_MUSIC_DIR},
+                           optional={f"boss:{b['name']}": here / b["music"] for b in C.BOSSES if b.get("music")})
         self.sfx = SoundEffects(here / C.SFX_DIR)
 
         self.mode = MODE_MENU
@@ -132,6 +141,11 @@ class Game:
         self.stats = FightStats()     # replaced with a fresh one at the start of every fight
         self._melee = None            # (enemy.attack_seq, stats id) of the melee strike being tracked
         self.summary_t = 0.0
+        self.intro_t = 0.0
+        self.intro_from_x = self.intro_to_x = 0.0
+        self.slowmo_t = 0.0           # real seconds of K.O. hit-stop / slow motion left
+        self.combo_pop_t = 9.0        # seconds since the combo counter last went up (drives its pop)
+        self._now = 0.0
         self.menu_index = 0
         self.menu_page = "main"
         self.menu_rects = []
@@ -199,6 +213,8 @@ class Game:
             self.menu_index = (self.menu_index + step) % len(self._summary_items())
         elif self.mode == MODE_SUMMARY and key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
             self._summary_select(self.menu_index)
+        elif self.mode == MODE_INTRO and key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+            self.intro_t = max(self.intro_t, C.INTRO_WARNING_TIME + C.INTRO_TITLE_TIME)  # straight to 3-2-1
         elif key == pygame.K_ESCAPE:
             self._open_menu()
         elif key == pygame.K_c:
@@ -302,6 +318,7 @@ class Game:
 
     def _stop_fight(self) -> None:
         self.music.stop()
+        self.slowmo_t = 0.0
         self.effects.clear()
         self.stars.clear()
         self.hazards.clear()
@@ -316,14 +333,27 @@ class Game:
         self.music.play("menu")
 
     def _start_countdown(self) -> None:
-        """Gives the player a few seconds to get into position before calibrating or fighting."""
+        """Start the next fight: the boss intro, or first a few seconds to get into position and calibrate."""
         self._stop_fight()
-        self.mode = MODE_COUNTDOWN
-        self.countdown_t = float(C.COUNTDOWN_SECONDS)
         self.result = ""
         self.enemy_ready = False
         if self.player.calibrated:
-            self._place_enemy()  # show the upcoming boss during the countdown
+            self._start_intro()
+        else:
+            self.mode = MODE_COUNTDOWN
+            self.countdown_t = float(C.COUNTDOWN_SECONDS)
+
+    def _start_intro(self) -> None:
+        """WARNING -> boss name and title while he walks in -> 3-2-1 -> FIGHT! His theme starts here."""
+        self._place_enemy()
+        e = self.enemy
+        self.intro_to_x = e.x
+        self.intro_from_x = self.size[0] + 0.3 * e.H if e.facing < 0 else -0.3 * e.H  # walks in from his side
+        e.x = self.intro_from_x
+        e.walk_in(0.0, e.x, 0.0)
+        self.intro_t = 0.0
+        self.mode = MODE_INTRO
+        self.music.play(f"boss:{self.boss['name']}", fallback="fight")
 
     def _place_enemy(self) -> None:
         p = self.player
@@ -350,7 +380,7 @@ class Game:
         self.mode = MODE_FIGHT
         self.sfx.stop()  # cut off a victory cheer still playing from the last fight
         self.sfx.bell_ring()
-        self.music.start()
+        self.music.play(f"boss:{self.boss['name']}", fallback="fight")  # keeps playing if the intro started it
         self.effects.text("FIGHT!", (self.size[0] / 2, self.size[1] * 0.35), (255, 255, 255), 110, 1.2)
         if p.shield_enabled:
             self.effects.text("You have a SHIELD on your left arm: catch his sword on it to parry!",
@@ -359,14 +389,28 @@ class Game:
             self.effects.text("Feet not visible: step back so you can kick and jump over sweeps",
                               (self.size[0] / 2, self.size[1] * 0.47), (255, 200, 80), 32, 3.0)
 
+    def _time_scale(self, dt: float) -> float:
+        """K.O.: a short freeze-frame, then slow motion; 1.0 the rest of the time."""
+        if self.slowmo_t <= 0:
+            return 1.0
+        elapsed = C.KO_SLOWMO_TIME - self.slowmo_t
+        self.slowmo_t -= dt
+        return 0.0 if elapsed < C.KO_HITSTOP else C.KO_SLOWMO_SCALE
+
     def _update(self, dt: float, now: float) -> None:
+        self._now = now
         self.player.update(dt, now)
-        self.effects.update(dt)
+        wdt = dt * self._time_scale(dt)  # "world" time: the boss, projectiles, spells and particles
+        self.effects.update(wdt)
+        self.combo_pop_t += dt
         self.trail_player += (self.player.hp - self.trail_player) * min(1.0, dt * 3)
         self.trail_enemy += (self.enemy.hp - self.trail_enemy) * min(1.0, dt * 3)
 
         if self.mode == MODE_SUMMARY:  # the arena stays frozen behind the summary
+            before = self.summary_t
             self.summary_t += dt
+            if before <= C.SUMMARY_TALLY_TIME < self.summary_t:
+                self.sfx.punch(0.9)  # the rank stamps down
             return
         if self.mode == MODE_MENU:
             return
@@ -374,18 +418,26 @@ class Game:
             self.countdown_t -= dt
             if self.countdown_t <= 0:
                 if self.player.calibrated:
-                    self._begin_fight(now)
+                    self._start_intro()
                 else:
                     self.mode = MODE_CALIBRATE
                     self.player.calibration_enabled = True
             return
         if self.mode == MODE_CALIBRATE:
             if self.player.calibrated:
+                self._start_intro()
+            return
+        if self.mode == MODE_INTRO:
+            self.intro_t += dt
+            walk_time = C.INTRO_WARNING_TIME + C.INTRO_TITLE_TIME
+            speed = abs(self.intro_to_x - self.intro_from_x) / (walk_time * 0.85)
+            self.enemy.walk_in(dt, self.intro_to_x, speed)
+            if self.intro_t >= walk_time + C.COUNTDOWN_SECONDS:
                 self._begin_fight(now)
             return
 
         self.enemy.hazards_active = bool(self.hazards)  # one spell at a time: never overlapping hazards
-        self.enemy.update(dt, self.player)
+        self.enemy.update(wdt, self.player)
         for cast in self.enemy.pop_casts():
             self._spawn_spell(cast)
         for kind, pos in self.enemy.pop_teleport_events():
@@ -393,13 +445,14 @@ class Game:
         if self.enemy.pop_flip_started():  # leaping over the player
             self.sfx.throw(0.8)
             self.effects.burst((self.enemy.x, self.enemy.ground_y), (70, 60, 50), 14, 260, size=(3.0, 6.0))
-        if self.enemy.pop_landed():  # boss hit the floor after a knockdown
-            self.effects.shake(12)
+        if self.enemy.pop_landed():  # boss hit the floor after a knockdown (or the K.O.)
+            ko = self.enemy.state is EnemyState.DEAD
+            self.effects.shake(22 if ko else 12)
             self.effects.burst((self.enemy.x - self.enemy.facing * self.enemy.H * 0.4, self.enemy.ground_y),
-                               (60, 50, 70), 24, 300, size=(3.0, 7.0), gravity=600)
-            self.sfx.punch(0.6)
-        self._update_stars(dt)
-        self._update_hazards(dt)
+                               (60, 50, 70), 44 if ko else 24, 420 if ko else 300, size=(3.0, 7.0), gravity=600)
+            self.sfx.punch(1.0 if ko else 0.6)
+        self._update_stars(wdt)
+        self._update_hazards(wdt)
         if self.mode == MODE_FIGHT:
             self.music.set_paused(not self.player.tracked)
             self._track_enemy_melee()
@@ -654,35 +707,54 @@ class Game:
             hp_before = enemy.hp
             result = enemy.take_kick(damage, part) if kick else enemy.take_hit(damage)
             dealt = hp_before - enemy.hp
+            pos = limb.center
             if dealt > 0:  # only attacks that actually hurt the boss count as landed
                 self.stats.record_damage_dealt(dealt)
-                self.stats.limb_landed(kind, side)
-            pos = limb.center
+                if self.stats.limb_landed(kind, side):
+                    self._combo_hit(pos)
 
             if result == "blocked":
                 dealt = round(damage * C.ENEMY_KICK_BLOCK_DAMAGE)
                 self.effects.burst(pos, (200, 150, 255), 16, 360)
                 self.effects.text(f"BLOCKED -{dealt}", (pos[0], pos[1] - 40), (200, 160, 255), 40)
                 self.effects.shake(5)
-                self.sfx.punch(0.5)
+                self.sfx.kick(0.5)
             else:
                 self.effects.burst(pos, (255, 240, 200), 30 if kick else 22, 620 if kick else 520)
                 self.effects.burst(pos, (255, 140, 40), 12, 320)
                 self.effects.text(f"-{damage}", (pos[0], pos[1] - 40), (255, 220, 120), 48 if kick else 40)
                 self.effects.shake((10 if kick else 6) + 6 * power)
-                self.sfx.punch(0.85 + 0.15 * power if kick else 0.7 + 0.3 * power)
+                if kick:
+                    self.sfx.kick(0.85 + 0.15 * power)
+                else:
+                    self.sfx.punch(0.7 + 0.3 * power)
             if result == "knockdown":
                 how = "HEAD KICK!" if part == "head" else "LEG SWEEP!"
                 self.effects.text(f"{how} KNOCKDOWN!", (ec[0], ec[1] - enemy.H * 0.45), (255, 200, 80), 60, 1.2)
-            elif result == "ko":
+            elif result == "ko":  # freeze-frame, slow motion, and he goes down (see enemy._update_death)
                 sk = enemy.sk
+                self.slowmo_t = C.KO_SLOWMO_TIME
                 self.effects.smoke([sk[k] for k in ("head", "shoulder", "hip", "f_hand", "r_hand",
                                                     "f_elbow", "r_elbow", "f_knee", "r_knee",
-                                                    "f_ankle", "r_ankle")], per_point=10)
-                self.effects.text("K.O.", (ec[0], ec[1] - enemy.H * 0.5), (255, 255, 255), 120, 1.6)
-                self.effects.shake(18)
+                                                    "f_ankle", "r_ankle")], per_point=6)
+                self.effects.burst(pos, (255, 255, 255), 50, 900, size=(3.0, 8.0))
+                self.effects.burst(pos, (255, 180, 60), 30, 650, size=(3.0, 7.0))
+                self.effects.flash((255, 255, 255), 200)
+                self.effects.text("K.O.", (self.size[0] / 2, self.size[1] * 0.3), (255, 255, 255), 170, 2.0)
+                self.effects.shake(26)
+                (self.sfx.kick if kick else self.sfx.punch)(1.0)
             if not enemy.can_be_hit:
                 return
+
+    def _combo_hit(self, pos) -> None:
+        """A new landed hit: grow the combo and celebrate it once it's 2+."""
+        n = self.stats.combo_hit(self._now)
+        if n < 2:
+            return
+        self.combo_pop_t = 0.0
+        if n >= C.COMBO_WORDS[0][0]:  # top tier: make it feel huge
+            self.effects.burst(pos, C.COMBO_WORDS[0][2], 26, 700, size=(3.0, 7.0))
+            self.effects.flash(C.COMBO_WORDS[0][2], 60)
 
     def _strike_staff(self, pos) -> None:
         if self.enemy.staff_struck() == "parry":
@@ -786,7 +858,7 @@ class Game:
         self.effects.burst(pos, (255, 60, 60), 20, 420)
         self.effects.text(f"{spec.label}! -{damage:.0f}", (pos[0], pos[1] - 30), (255, 90, 90), 42)
         self.effects.flash((180, 0, 0), 110)
-        self.sfx.punch(1.0)
+        (self.sfx.kick if spec.limb == "front_foot" else self.sfx.punch)(1.0)  # his kicks and sweeps
         self.effects.shake(10 + damage * 0.5)
 
     # --- rendering -----------------------------------------------------------
@@ -797,8 +869,7 @@ class Game:
         else:
             world.fill((12, 10, 18))
 
-        show_enemy = self.mode in (MODE_FIGHT, MODE_OVER, MODE_SUMMARY) or \
-            (self.mode == MODE_COUNTDOWN and self.enemy_ready)
+        show_enemy = self.mode in (MODE_INTRO, MODE_FIGHT, MODE_OVER, MODE_SUMMARY)
         now = time.perf_counter()
         for hz in self.hazards:  # floor warnings / scorch marks go under everyone
             if isinstance(hz, GroundStrike):
@@ -877,10 +948,10 @@ class Game:
         self._text(label, rect.center, self.font_menu, (255, 255, 255), "center")
 
     def _draw_summary(self) -> None:
-        """Fight Summary: three panels (offence / defence / performance) whose numbers count up."""
+        """Workout report: stats on the left, Fitness Score / grades / rank on the right. Numbers count up."""
         w, h = self.size
         s = self.stats
-        self._dim(205)
+        self._dim(215)
         k = min(1.0, self.summary_t / C.SUMMARY_TALLY_TIME)
         k = 1.0 - (1.0 - k) ** 3  # ease out: numbers race up, then settle
 
@@ -895,75 +966,194 @@ class Game:
 
         title, color = {"VICTORY": ("VICTORY", (120, 255, 160)), "CHAMPION": ("CHAMPION!", (255, 220, 90))} \
             .get(s.result, ("DEFEAT", (255, 90, 90)))
-        self._text(title, (w / 2, 58), self.font_big, color, "center")
-        self._text("FIGHT SUMMARY", (w / 2, 112), self.font_menu, (235, 225, 255), "center")
-        who = "BOSS DEFEATED" if s.result in ("VICTORY", "CHAMPION") else "DEFEATED BY"
-        self._text(f"{who}:  {s.boss_name}", (w / 2, 146), self.font, (200, 190, 230), "center")
+        self._text("WORKOUT COMPLETE", (w / 2, 30), self.font_menu, (255, 220, 120), "center")
+        self._text(title, (w / 2, 84), self.font_big, color, "center")
+        who = "BOSS DEFEATED" if s.won else "DEFEATED BY"
+        boss_title = next((b.get("title", "") for b in C.BOSSES if b["name"] == s.boss_name), "")
+        self._text(f"{who}:  {s.boss_name}" + (f"  -  {boss_title}" if boss_title else ""), (w / 2, 136),
+                   self.font, (200, 190, 230), "center")
 
-        pw, gap, top, ph = 380, 22, 172, 408
-        x0 = (w - (3 * pw + 2 * gap)) // 2
+        top, ph = 160, 432
         purple, gold, dim_white = (220, 200, 255), (255, 220, 120), (210, 210, 220)
 
-        def panel(i, heading, heading_color):
-            rect = pygame.Rect(x0 + i * (pw + gap), top, pw, ph)
+        def panel(x, pw, heading, heading_color):
+            rect = pygame.Rect(x, top, pw, ph)
             pygame.draw.rect(self.screen, (40, 34, 56), rect, border_radius=12)
             pygame.draw.rect(self.screen, (90, 80, 120), rect, 3, border_radius=12)
-            self._text(heading, (rect.centerx, rect.top + 30), self.font_menu, heading_color, "center")
+            self._text(heading, (rect.centerx, rect.top + 28), self.font_menu, heading_color, "center")
             return rect
 
-        def hero(cx, y, value, label, value_color):
-            self._text(value, (cx, y), self.font_stat, value_color, "center")
-            self._text(label, (cx, y + 40), self.font_small, dim_white, "center")
-
-        def rows(rect, y, items):
+        def rows(rect, items):
+            y = rect.top + 72
             for label, value, value_color in items:
-                self._text(label, (rect.left + 22, y), self.font, dim_white, "midleft")
-                self._text(value, (rect.right - 22, y), self.font, value_color, "midright")
-                y += 34
+                self._text(label, (rect.left + 22, y), self.font_row, dim_white, "midleft")
+                self._text(value, (rect.right - 22, y), self.font_row, value_color, "midright")
+                y += 33
 
-        r = panel(0, "OFFENSE", (255, 140, 40))
-        hero(r.left + pw * 0.27, r.top + 100, pct(s.punch_accuracy), "PUNCH ACCURACY", grade(s.punch_accuracy))
-        hero(r.left + pw * 0.73, r.top + 100, pct(s.kick_accuracy), "KICK ACCURACY", grade(s.kick_accuracy))
-        rows(r, r.top + 186, [
-            ("Punches landed", f"{num(s.punches_landed)} / {num(s.punches_thrown)}", purple),
-            ("Kicks landed", f"{num(s.kicks_landed)} / {num(s.kicks_thrown)}", purple),
-            ("Damage dealt", num(s.damage_dealt), purple),
+        dur = s.duration()
+        r = panel(48, 390, "WORKOUT", (255, 140, 40))
+        rows(r, [
+            ("Time", format_duration(dur * k), (255, 255, 255)),
+            ("Punches thrown", num(s.punches_thrown), purple),
+            ("Punches landed", num(s.punches_landed), purple),
+            ("Punch accuracy", pct(s.punch_accuracy), grade(s.punch_accuracy)),
+            ("Kicks thrown", num(s.kicks_thrown), purple),
+            ("Kicks landed", num(s.kicks_landed), purple),
+            ("Kick accuracy", pct(s.kick_accuracy), grade(s.kick_accuracy)),
+            ("Best combo", f"x{num(s.best_combo)}", gold),
+            ("Estimated calories", f"{num(s.calories())} kcal", gold),
         ])
-        self._text("TOTAL HITS", (r.left + 22, r.bottom - 52), self.font_menu, gold, "midleft")
-        self._text(num(s.total_hits), (r.right - 22, r.bottom - 52), self.font_stat, gold, "midright")
+        self._text(f"Calories: rough estimate, assumes {C.CALORIE_WEIGHT_KG:.0f} kg", (r.centerx, r.bottom - 20),
+                   self.font_small, (150, 145, 170), "center")
 
-        r = panel(1, "DEFENSE", (70, 200, 255))
-        hero(r.centerx, r.top + 100, pct(s.dodge_rate), "DODGE RATE", grade(s.dodge_rate))
-        rows(r, r.top + 186, [
+        health = s.health_remaining * 100
+        r = panel(452, 390, "COMBAT", (70, 200, 255))
+        rows(r, [
+            ("Total hits", num(s.total_hits), gold),
+            ("Damage dealt", num(s.damage_dealt), purple),
             ("Attacks faced", num(s.enemy_attacks_faced), purple),
-            ("Dodged", num(s.enemy_attacks_dodged), (120, 255, 160)),
+            ("Attacks dodged", num(s.enemy_attacks_dodged), (120, 255, 160)),
             ("Blocked", num(s.enemy_attacks_blocked), (140, 210, 255)),
             ("Hit by", num(s.enemy_attacks_hit), (255, 90, 90)),
+            ("Dodge rate", pct(s.dodge_rate), grade(s.dodge_rate)),
+            ("Longest dodge streak", num(s.longest_dodge_streak), (120, 255, 160)),
             ("Damage taken", num(s.damage_taken), (255, 90, 90)),
+            ("Health remaining", pct(health), grade(health)),
         ])
 
-        r = panel(2, "PERFORMANCE", gold)
-        hero(r.centerx, r.top + 100, format_duration(s.duration() * k), "FIGHT TIME", (255, 255, 255))
-        health = s.health_remaining * 100
-        rows(r, r.top + 186, [
-            ("Health remaining", pct(health), grade(health)),
-            ("Longest dodge streak", num(s.longest_dodge_streak), (120, 255, 160)),
-            ("Est. calories", f"~{num(s.calories())} kcal", purple),
-        ])
-        self._text(f"Calories: rough estimate, assumes {C.CALORIE_WEIGHT_KG:.0f} kg", (r.centerx, r.bottom - 22),
-                   self.font_small, (150, 145, 170), "center")
+        r = panel(856, 376, "FITNESS SCORE", gold)
+        self._text(num(s.fitness_score()), (r.centerx, r.top + 84), self.font_stat, (255, 255, 255), "center")
+        cats = s.category_scores()
+        for i, (key, label) in enumerate((("accuracy", "ACCURACY"), ("dodging", "DODGING"),
+                                          ("activity", "ACTIVITY"), ("combos", "COMBOS"))):
+            cx = r.left + r.width * (0.27 if i % 2 == 0 else 0.73)
+            cy = r.top + 150 + (i // 2) * 72
+            letter = rank(cats[key])
+            self._text(letter, (cx, cy), self.font_grade, RANK_COLORS[letter], "center")
+            self._text(label, (cx, cy + 30), self.font_small, dim_white, "center")
+        perf = s.performance()
+        bar = pygame.Rect(r.left + 22, r.top + 296, r.width - 44, 18)
+        self._text("PERFORMANCE", (bar.left, bar.top - 14), self.font_small, dim_white, "midleft")
+        self._text(f"{round(perf * k)}", (bar.right, bar.top - 14), self.font_small, (255, 255, 255), "midright")
+        pygame.draw.rect(self.screen, (20, 20, 28), bar.inflate(6, 6), border_radius=6)
+        overall = s.overall_rank()
+        fill = bar.copy()
+        fill.width = int(bar.width * perf / 100 * k)
+        if fill.width > 0:
+            pygame.draw.rect(self.screen, RANK_COLORS[overall], fill, border_radius=4)
+        self._text("OVERALL RANK", (r.centerx, r.top + 340), self.font_small, dim_white, "center")
+        stamp_t = self.summary_t - C.SUMMARY_TALLY_TIME
+        if stamp_t > 0:  # the rank stamps down once the numbers have counted up
+            pop = max(0.0, 1.0 - stamp_t / 0.18)
+            self._text_scaled(overall, (r.centerx, r.top + 388), self.font_rank, RANK_COLORS[overall],
+                              1.0 + 1.2 * pop, 1.0 - 0.6 * pop)
 
         self.menu_rects = []
         items = self._summary_items()
         bw = [max(200, self.font_menu.size(label)[0] + 50) for label, _ in items]
         x = (w - (sum(bw) + 18 * (len(items) - 1))) // 2
         for i, (label, _) in enumerate(items):
-            rect = pygame.Rect(x, top + ph + 26, bw[i], 52)
+            rect = pygame.Rect(x, top + ph + 18, bw[i], 52)
             self._button(rect, label, i == self.menu_index)
             self.menu_rects.append(rect)
             x += bw[i] + 18
         self._text("Left/Right + Enter or click    [R] fight again    [C] recalibrate    [Esc] menu",
-                   (w / 2, h - 18), self.font_small, (170, 170, 185), "center")
+                   (w / 2, h - 14), self.font_small, (170, 170, 185), "center")
+
+    def _text_scaled(self, msg, center, font, color, scale: float = 1.0, alpha: float = 1.0) -> None:
+        """Centred text with a drop shadow, scaled and faded (for pops and stamps)."""
+        fg = font.render(msg, True, color)
+        surf = pygame.Surface((fg.get_width() + 3, fg.get_height() + 3), pygame.SRCALPHA)
+        surf.blit(font.render(msg, True, (0, 0, 0)), (3, 3))
+        surf.blit(fg, (0, 0))
+        if abs(scale - 1.0) > 1e-3:
+            surf = pygame.transform.smoothscale(surf, (max(1, int(surf.get_width() * scale)),
+                                                       max(1, int(surf.get_height() * scale))))
+        surf.set_alpha(int(255 * max(0.0, min(1.0, alpha))))
+        self.screen.blit(surf, surf.get_rect(center=(int(center[0]), int(center[1]))))
+
+    def _draw_countdown_digit(self, remaining: float) -> None:
+        w, h = self.size
+        n = max(1, math.ceil(remaining))
+        frac = n - remaining  # 0 -> 1 within each second
+        size = int(220 + 120 * (1 - frac))
+        digit = pygame.font.Font(None, size).render(str(n), True, (255, 255, 255))
+        digit.set_alpha(int(255 * min(1.0, 1.4 - frac)))
+        self.screen.blit(digit, digit.get_rect(center=(w // 2, int(h * 0.5))))
+
+    def _warning_sign(self, center, size: float) -> None:
+        cx, cy = center
+        pts = [(cx, cy - size * 0.6), (cx + size * 0.62, cy + size * 0.5), (cx - size * 0.62, cy + size * 0.5)]
+        pygame.draw.polygon(self.screen, (255, 210, 40), pts)
+        pygame.draw.polygon(self.screen, (40, 20, 0), pts, 3)
+        pygame.draw.line(self.screen, (40, 20, 0), (cx, cy - size * 0.22), (cx, cy + size * 0.18),
+                         max(3, int(size * 0.1)))
+        pygame.draw.circle(self.screen, (40, 20, 0), (int(cx), int(cy + size * 0.33)), max(2, int(size * 0.06)))
+
+    def _draw_intro(self) -> None:
+        """WARNING / '<BOSS> APPROACHING', then his name and title, then 3-2-1."""
+        w, h = self.size
+        t = self.intro_t
+        boss = self.boss
+        warn_end = C.INTRO_WARNING_TIME
+        title_end = warn_end + C.INTRO_TITLE_TIME
+        if t < warn_end:
+            pulse = 0.5 + 0.5 * math.sin(t * math.tau * 2.5)
+            self._tint.set_alpha(int(35 + 55 * pulse))
+            self.screen.blit(self._tint, (0, 0))
+            for y in (int(h * 0.29), int(h * 0.60)):  # hazard stripes
+                band = pygame.Rect(0, y, w, 16)
+                pygame.draw.rect(self.screen, (255, 210, 40), band)
+                for x in range(-40 + int(t * 160) % 40, w, 40):
+                    pygame.draw.polygon(self.screen, (30, 20, 0), [(x, band.bottom), (x + 16, band.top),
+                                                                 (x + 32, band.top), (x + 16, band.bottom)])
+            if int(t * 6) % 2 == 0 or t > warn_end - 0.35:
+                self._text("WARNING", (w / 2, h * 0.41), self.font_huge, (255, 60, 50), "center")
+            msg = f"{boss['name']} APPROACHING"
+            mw = self.font_menu.size(msg)[0]
+            self._text(msg, (w / 2, h * 0.535), self.font_menu, (255, 220, 120), "center")
+            for side in (-1, 1):
+                self._warning_sign((w / 2 + side * (mw / 2 + 40), h * 0.535), 40)
+        elif t < title_end:
+            u = (t - warn_end) / C.INTRO_TITLE_TIME
+            appear = min(1.0, u / 0.2)
+            name_color = tuple(min(255, c + 100) for c in boss["rim"])
+            self._text(f"ROUND {self.boss_index + 1} / {len(C.BOSSES)}", (w / 2, h * 0.27), self.font,
+                       (200, 190, 230), "center")
+            self._text_scaled(boss["name"], (w / 2, h * 0.39), self.font_huge, name_color,
+                              1.0 + 0.35 * (1.0 - appear), appear)
+            title = boss.get("title", "")
+            if title and u > 0.15:
+                a = min(1.0, (u - 0.15) / 0.2)
+                tw = self.font_menu.size(title)[0]
+                for side in (-1, 1):
+                    x0 = w / 2 + side * (tw / 2 + 20)
+                    pygame.draw.line(self.screen, (255, 220, 120), (x0, h * 0.505),
+                                     (x0 + side * 90 * a, h * 0.505), 3)
+                self._text_scaled(title, (w / 2, h * 0.505), self.font_menu, (255, 220, 120), 1.0, a)
+        else:
+            self._text(f"ROUND {self.boss_index + 1}: {boss['name']}", (w / 2, h * 0.14), self.font_menu,
+                       (235, 225, 255), "center")
+            self._text("Get ready!", (w / 2, h * 0.21), self.font, anchor="center")
+            self._draw_countdown_digit(C.INTRO_WARNING_TIME + C.INTRO_TITLE_TIME + C.COUNTDOWN_SECONDS - t)
+        self._text("[Enter] skip", (w - 20, h - 52), self.font_small, (170, 170, 185), "topright")
+
+    def _draw_combo(self) -> None:
+        """'4 HIT COMBO / AMAZING!' near the top while a combo is alive; pops on every new hit."""
+        s = self.stats
+        if s.combo < 2 or s.last_hit_at is None:
+            return
+        age = self._now - s.last_hit_at
+        alpha = 1.0 if age <= C.COMBO_WINDOW else 1.0 - (age - C.COMBO_WINDOW) / 0.4
+        if alpha <= 0:
+            return
+        _, word, color = next(c for c in C.COMBO_WORDS if s.combo >= c[0])
+        pop = 1.0 + 0.55 * max(0.0, 1.0 - self.combo_pop_t / 0.18)
+        size = 64 + 8 * min(s.combo - 2, 5)
+        w, h = self.size
+        self._text_scaled(f"{s.combo} HIT COMBO", (w / 2, h * 0.19), self.effects.font(size), color, pop, alpha)
+        self._text_scaled(word, (w / 2, h * 0.19 + size * 0.75 * pop), self.effects.font(int(size * 0.7)), color,
+                          pop, alpha)
 
     def _text(self, msg, pos, font=None, color=(255, 255, 255), anchor="topleft") -> None:
         font = font or self.font
@@ -1017,12 +1207,9 @@ class Game:
                        (235, 225, 255), "center")
             self._text("Get into position: about 6 ft (2 m) back, whole body in view", (w / 2, h * 0.21),
                        self.font, anchor="center")
-            n = max(1, math.ceil(self.countdown_t))
-            frac = n - self.countdown_t  # 0 -> 1 within each second
-            size = int(220 + 120 * (1 - frac))
-            digit = pygame.font.Font(None, size).render(str(n), True, (255, 255, 255))
-            digit.set_alpha(int(255 * min(1.0, 1.4 - frac)))
-            self.screen.blit(digit, digit.get_rect(center=(w // 2, int(h * 0.5))))
+            self._draw_countdown_digit(self.countdown_t)
+        elif self.mode == MODE_INTRO:
+            self._draw_intro()
         elif self.mode == MODE_CALIBRATE:
             self._text("CALIBRATION", (w / 2, h * 0.12), self.font_big, anchor="center")
             self._text("Hold still with your whole body in view.", (w / 2, h * 0.21), self.font, anchor="center")
@@ -1034,7 +1221,9 @@ class Game:
                       self.player.calibration_progress, 1.0, (120, 255, 160))
         elif self.mode == MODE_FIGHT and not self.player.tracked:
             self._text("STEP INTO VIEW", (w / 2, h * 0.45), self.font_big, (255, 200, 80), "center")
-        elif self.mode == MODE_OVER and self.over_timer > 0.8:
+        elif self.mode == MODE_FIGHT:
+            self._draw_combo()
+        elif self.mode == MODE_OVER and self.over_timer > (0.8 if self.result == "DEFEAT" else 2.2):
             if self.result == "VICTORY":
                 nxt = C.BOSSES[self.boss_index + 1]["name"]
                 self._text("VICTORY", (w / 2, h * 0.4), self.font_big, (120, 255, 160), "center")

@@ -1,4 +1,4 @@
-"""Sound effects: fight bell, punch impacts, star throws, victory cheer and defeat groan.
+"""Sound effects: fight bell, punch and kick impacts, star throws, victory cheer and defeat groan.
 
 Files are found by keyword in their names (see SFX_KEYWORDS in config), so they can
 be renamed or replaced freely. A file holding several punches back to back is split
@@ -96,6 +96,7 @@ class SoundEffects:
         self.cheer: Optional[pygame.mixer.Sound] = None
         self.groan: Optional[pygame.mixer.Sound] = None
         self.punches: List[pygame.mixer.Sound] = []
+        self.kicks: List[pygame.mixer.Sound] = []
         self.throws: List[pygame.mixer.Sound] = []
         self._last: Dict[str, int] = {}
 
@@ -108,24 +109,25 @@ class SoundEffects:
                 pygame.mixer.init()
             pygame.mixer.set_num_channels(16)
             rate = pygame.mixer.get_init()[0]
-            found: Dict[str, Path] = {}
+            # Single roles use the first matching file; pooled roles (punch, kick, throw) use every
+            # matching file, and a random hit from the whole pool plays each time.
+            found: Dict[str, List[Path]] = {}
+            claimed: List[Path] = []
             for role, keywords in C.SFX_KEYWORDS.items():
-                found_path = next((p for p in files if p not in found.values()
-                                   and any(k in p.name.lower() for k in keywords)), None)
-                if found_path is None:
+                matches = [p for p in files if p not in claimed and any(k in p.name.lower() for k in keywords)]
+                if role not in C.SFX_POOLED_ROLES:
+                    matches = matches[:1]
+                if not matches:
                     print(f"[sfx] no {role} sound found (looked for {', '.join(keywords)} in the file name)")
-                else:
-                    found[role] = found_path
-            if "bell" in found:
-                self.bell = trim_leading_silence(pygame.mixer.Sound(str(found["bell"])), rate)
-            if "cheer" in found:
-                self.cheer = trim_leading_silence(pygame.mixer.Sound(str(found["cheer"])), rate)
-            if "groan" in found:
-                self.groan = trim_leading_silence(pygame.mixer.Sound(str(found["groan"])), rate)
-            if "punch" in found:
-                self.punches = split_hits(pygame.mixer.Sound(str(found["punch"])), rate)
-            if "throw" in found:
-                self.throws = split_hits(pygame.mixer.Sound(str(found["throw"])), rate)
+                    continue
+                found[role] = matches
+                claimed += matches
+            for role, attr in (("bell", "bell"), ("cheer", "cheer"), ("groan", "groan")):
+                if role in found:
+                    setattr(self, attr, trim_leading_silence(pygame.mixer.Sound(str(found[role][0])), rate))
+            for role, attr in (("punch", "punches"), ("kick", "kicks"), ("throw", "throws")):
+                setattr(self, attr, [hit for path in found.get(role, [])
+                                     for hit in split_hits(pygame.mixer.Sound(str(path)), rate)])
             self.available = True
         except pygame.error as exc:  # no audio device, unsupported file, ...
             print(f"[sfx] could not load sound effects: {exc}")
@@ -151,6 +153,13 @@ class SoundEffects:
 
     def punch(self, volume: float = 1.0) -> None:
         self._play_random("punch", self.punches, volume)
+
+    def kick(self, volume: float = 1.0) -> None:
+        """Kick impact; falls back to a punch sound if there's no kick file."""
+        if self.kicks:
+            self._play_random("kick", self.kicks, volume)
+        else:
+            self.punch(volume)
 
     def throw(self, volume: float = 1.0) -> None:
         self._play_random("throw", self.throws, volume)
