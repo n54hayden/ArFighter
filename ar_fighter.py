@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""AR Shadow Fighter: fight a shadow with your body through your webcam.
+"""ARena: Fit Fighter: fight shadow bosses with your body through your webcam.
 
 Run:   python ar_fighter.py [--camera 0] [--complexity 1] [--debug]
 
 Flow: menu -> (first time: 3 s to get into position -> calibration) -> boss intro
 (WARNING, name and title, 3-2-1) -> fight -> workout summary with a Fitness Score, then
 Next Boss / Fight Again / Select Boss / Main Menu. Bosses 1-5 in order, or pick any boss
-from Select Boss.
+from Select Boss. Wins that make the top 10 go on the Fitness Score leaderboard.
 
 Controls:
     Enter  start (menu) / skip the boss intro / choose an option (Fight Summary)
@@ -41,6 +41,7 @@ from fighter.camera import CameraThread
 from fighter.effects import Effects
 from fighter.enemy import EnemyState, ShadowEnemy
 from fighter.geometry import intersects
+from fighter.leaderboard import Leaderboard
 from fighter.player import SIDES, PlayerTracker
 from fighter.projectiles import ThrowingStar
 from fighter.spells import FireWall, GroundStrike, capsule_hits_rect, circle_hits_rect, make_fire_wall, \
@@ -121,6 +122,9 @@ class Game:
         here = Path(__file__).resolve().parent
         self.save_path = here / C.SAVE_FILE
         self.checkpoint = self._load_checkpoint()  # furthest boss reached by beating the one before
+        self.leaderboard = Leaderboard(here / C.LEADERBOARD_FILE)
+        self.name_entry = None        # initials being typed after a top-10 win (None = not entering)
+        self.board_pos = None         # 1-based leaderboard place just earned (pop-up showing the board)
         self.music = Music({"fight": here / C.MUSIC_DIR, "menu": here / C.MENU_MUSIC_DIR},
                            optional={f"boss:{b['name']}": here / b["music"] for b in C.BOSSES if b.get("music")})
         self.sfx = SoundEffects(here / C.SFX_DIR)
@@ -173,6 +177,8 @@ class Game:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
+            elif self._summary_popup() and event.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
+                self._popup_input(event)
             elif self.mode in (MODE_MENU, MODE_SUMMARY) and event.type == pygame.MOUSEMOTION:
                 for i, rect in enumerate(self.menu_rects):
                     if rect.collidepoint(event.pos):
@@ -197,7 +203,7 @@ class Game:
         elif key == pygame.K_d:
             self.debug = not self.debug
         elif self.mode == MODE_MENU:
-            if key == pygame.K_ESCAPE and self.menu_page == "bosses":
+            if key == pygame.K_ESCAPE and self.menu_page != "main":
                 self.menu_page, self.menu_index = "main", 0
             elif key == pygame.K_ESCAPE:
                 self.running = False
@@ -234,12 +240,14 @@ class Game:
         if self.menu_page == "bosses":
             return [(f"{i + 1}.  {b['name'].title()}", f"boss:{i}") for i, b in enumerate(C.BOSSES)] + \
                    [("Back", "back")]
+        if self.menu_page == "leaderboard":
+            return [("Back", "back")]
         items = []
         if self.checkpoint > 0:
             nxt = C.BOSSES[self.checkpoint]
             items.append((f"Continue: Round {self.checkpoint + 1} - {nxt['name'].title()}", "continue"))
         items.append(("New Game" if self.checkpoint > 0 else "Start Game", "new"))
-        items += [("Select Boss", "select"), ("Quit", "quit")]
+        items += [("Select Boss", "select"), ("Leaderboard", "leaderboard"), ("Quit", "quit")]
         return items
 
     def _menu_select(self, index: int) -> None:
@@ -248,6 +256,8 @@ class Game:
             self.running = False
         elif action == "select":
             self.menu_page, self.menu_index = "bosses", 0
+        elif action == "leaderboard":
+            self.menu_page, self.menu_index = "leaderboard", 0
         elif action == "back":
             self.menu_page, self.menu_index = "main", 0
         else:
@@ -279,6 +289,9 @@ class Game:
             self._open_menu()
 
     def _show_summary(self) -> None:
+        self.board_pos = None
+        won = self.result in ("VICTORY", "CHAMPION")
+        self.name_entry = "" if won and self.leaderboard.qualifies(self.stats.fitness_score()) else None
         if self.result == "DEFEAT":
             self.sfx.groan_crowd()
         else:
@@ -287,6 +300,40 @@ class Game:
         self.summary_t = 0.0
         self.menu_index = 0
         self.menu_rects = []
+
+    def _summary_popup(self):
+        """'entry' (typing initials), 'board' (showing your new place), 'wait' (entry not shown yet) or None."""
+        if self.mode != MODE_SUMMARY:
+            return None
+        if self.board_pos is not None:
+            return "board"
+        if self.name_entry is not None:
+            return "entry" if self.summary_t >= C.SUMMARY_TALLY_TIME + 0.5 else "wait"
+        return None
+
+    def _popup_input(self, event) -> None:
+        popup = self._summary_popup()
+        if popup == "board":
+            if event.type == pygame.MOUSEBUTTONDOWN or event.key in (pygame.K_RETURN, pygame.K_KP_ENTER,
+                                                                     pygame.K_SPACE, pygame.K_ESCAPE):
+                self.board_pos = None
+                self.menu_index = 0
+        elif popup == "entry" and event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                self.name_entry = None  # skip: the score isn't saved
+            elif event.key == pygame.K_BACKSPACE:
+                self.name_entry = self.name_entry[:-1]
+            elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                if self.name_entry:
+                    s = self.stats
+                    self.board_pos = self.leaderboard.add(self.name_entry, s.fitness_score(), s.boss_name,
+                                                          s.overall_rank()) or None
+                    self.name_entry = None
+                    self.sfx.bell_ring()
+            elif event.unicode and event.unicode.isascii() and event.unicode.isalnum() \
+                    and len(self.name_entry) < C.LEADERBOARD_NAME_LEN:
+                self.name_entry += event.unicode.upper()
+        # 'wait': swallow input so an early key press can't skip the entry or hit a button
 
     def _load_checkpoint(self) -> int:
         try:
@@ -909,17 +956,24 @@ class Game:
     def _draw_menu(self) -> None:
         w, h = self.size
         self._dim(170)
-        self._text("SHADOW FIGHTER", (w / 2, h * 0.17), self.font_huge, (235, 225, 255), "center")
-        self._text("An AR fighting game: your body is the controller", (w / 2, h * 0.28), self.font,
+        self._draw_logo((w / 2, h * 0.17))
+        self._text("Your body is the controller.  Every fight is a workout.", (w / 2, h * 0.28), self.font,
                    (200, 190, 230), "center")
 
         self.menu_rects = []
         items = self._menu_items()
-        bosses_page = self.menu_page == "bosses"
-        if bosses_page:
+        sub_page = self.menu_page != "main"  # boss list or leaderboard: no tips, Esc goes back
+        if self.menu_page == "bosses":
             self._text("Select a boss", (w / 2, h * 0.345), self.font_menu, (255, 220, 120), "center")
+            top = h * 0.44
+        elif self.menu_page == "leaderboard":
+            self._text("TOP 10 FITNESS SCORES", (w / 2, h * 0.345), self.font_menu, (255, 220, 120), "center")
+            self._draw_board(h * 0.40)
+            top = h * 0.88
+        else:
+            top = h * 0.37
+        gap = 60
         bw = max(340, max(self.font_menu.size(label)[0] for label, _ in items) + 60)  # fit the longest label
-        top, gap = (h * 0.44, 60) if bosses_page else (h * 0.38, 66)
         for i, (label, _) in enumerate(items):
             rect = pygame.Rect(0, 0, bw, 52)
             rect.center = (w // 2, int(top) + i * gap)
@@ -930,17 +984,89 @@ class Game:
             "Stand about 6 ft (2 m) back with your whole body in view.",
             "Punch and kick sideways at the boss.  Raise your forearms to block.",
             "Jump over low sweeps.  Duck under throwing stars.  Step back to get out of range.",
-            "Parry staff and sword.  Dodge the Mage's spells, then punish him.  Beat all five bosses!",
+            "Parry staff and sword.  Dodge Malakar's spells, then punish him.  Beat all five bosses!",
         ]
         tips_y = self.menu_rects[-1].bottom + 36  # always below the last button
-        for i, tip in enumerate([] if bosses_page else tips):
+        for i, tip in enumerate([] if sub_page else tips):
             self._text(tip, (w / 2, tips_y + i * 30), self.font, (210, 210, 220), "center")
         self._text("Up/Down + Enter or click    [M] mute    [F] fullscreen    "
-                   + ("[Esc] back" if bosses_page else "[Esc] quit"),
+                   + ("[Esc] back" if sub_page else "[Esc] quit"),
                    (w / 2, h - 30), self.font_small, (170, 170, 185), "center")
         if self.camera.error:
             self._text(f"Camera error: {self.camera.error}", (w / 2, h - 60), self.font_small, (255, 90, 90),
                        "center")
+
+    def _draw_logo(self, center) -> None:
+        """'ARena: Fit Fighter' with the AR picked out."""
+        parts = [("AR", (120, 200, 255)), ("ena: Fit Fighter", (235, 225, 255))]
+        surfs = [(self.font_huge.render(t, True, c), self.font_huge.render(t, True, (0, 0, 0))) for t, c in parts]
+        x = center[0] - sum(s.get_width() for s, _ in surfs) / 2
+        for fg, shadow in surfs:
+            rect = fg.get_rect(midleft=(x, center[1]))
+            self.screen.blit(shadow, rect.move(3, 3))
+            self.screen.blit(fg, rect)
+            x += fg.get_width()
+
+    def _draw_board(self, top: float, highlight=None) -> None:
+        """The leaderboard table (best first); `highlight` is a 1-based row to light up."""
+        w = self.size[0]
+        entries = self.leaderboard.entries
+        if not entries:
+            self._text("No scores yet: win a fight to get on the board!", (w / 2, top + 60), self.font,
+                       (200, 190, 230), "center")
+            return
+        x0, x1, row_h = w / 2 - 330, w / 2 + 330, 30
+        cols = ((x0 + 20, "midleft"), (x0 + 90, "midleft"), (x0 + 340, "midright"), (x0 + 400, "center"),
+                (x1 - 20, "midright"))
+        for (cx, anchor), label in zip(cols, ("#", "NAME", "SCORE", "RANK", "BOSS")):
+            self._text(label, (cx, top), self.font_small, (170, 170, 185), anchor)
+        for i, e in enumerate(entries):
+            y = top + 28 + i * row_h
+            if highlight == i + 1:
+                pygame.draw.rect(self.screen, (120, 70, 200), (x0, y - row_h / 2 + 1, x1 - x0, row_h - 2),
+                                 border_radius=6)
+            color = (255, 220, 120) if i == 0 else (255, 255, 255)
+            values = (f"{i + 1}.", e["name"], f"{e['score']:,}", e["rank"], e["boss"].title())
+            for j, ((cx, anchor), v) in enumerate(zip(cols, values)):
+                self._text(v, (cx, y), self.font_row, RANK_COLORS.get(v, color) if j == 3 else color, anchor)
+
+    def _draw_popup(self) -> None:
+        """Over the summary: type your initials, then see where you landed on the board."""
+        popup = self._summary_popup()
+        if popup not in ("entry", "board"):
+            return
+        w, h = self.size
+        self.menu_rects = []  # the summary buttons are covered
+        self._dim(150)
+        box = pygame.Rect(0, 0, 760 if popup == "board" else 600, 470 if popup == "board" else 360)
+        box.center = (w // 2, h // 2)
+        pygame.draw.rect(self.screen, (40, 34, 56), box, border_radius=16)
+        pygame.draw.rect(self.screen, (255, 220, 120), box, 3, border_radius=16)
+        if popup == "board":
+            self._text("LEADERBOARD", (w / 2, box.top + 36), self.font_menu, (255, 220, 120), "center")
+            self._draw_board(box.top + 80, self.board_pos)
+            self._text(f"You placed #{self.board_pos}!   [Enter] continue", (w / 2, box.bottom - 24),
+                       self.font_small, (200, 200, 210), "center")
+            return
+        score = self.stats.fitness_score()
+        place = self.leaderboard.position(score)
+        self._text("NEW HIGH SCORE!", (w / 2, box.top + 42), self.font_menu, (255, 220, 120), "center")
+        self._text(f"{score:,}", (w / 2, box.top + 100), self.font_stat, (255, 255, 255), "center")
+        self._text(f"#{place} on the leaderboard  -  enter your initials", (w / 2, box.top + 150), self.font,
+                   (200, 190, 230), "center")
+        n = C.LEADERBOARD_NAME_LEN
+        blink = int(self.summary_t * 3) % 2 == 0
+        for i in range(n):
+            slot = pygame.Rect(0, 0, 76, 92)
+            slot.center = (int(w / 2 + (i - (n - 1) / 2) * 96), box.top + 232)
+            active = i == len(self.name_entry)
+            pygame.draw.rect(self.screen, (20, 18, 30), slot, border_radius=10)
+            pygame.draw.rect(self.screen, (220, 200, 255) if active and blink else (90, 80, 120), slot, 3,
+                             border_radius=10)
+            if i < len(self.name_entry):
+                self._text(self.name_entry[i], slot.center, self.font_big, (255, 255, 255), "center")
+        self._text("Type letters   [Backspace] erase   [Enter] save   [Esc] skip", (w / 2, box.bottom - 26),
+                   self.font_small, (200, 200, 210), "center")
 
     def _button(self, rect: pygame.Rect, label: str, selected: bool) -> None:
         pygame.draw.rect(self.screen, (120, 70, 200) if selected else (40, 34, 56), rect, border_radius=12)
@@ -1059,6 +1185,7 @@ class Game:
             x += bw[i] + 18
         self._text("Left/Right + Enter or click    [R] fight again    [C] recalibrate    [Esc] menu",
                    (w / 2, h - 14), self.font_small, (170, 170, 185), "center")
+        self._draw_popup()
 
     def _text_scaled(self, msg, center, font, color, scale: float = 1.0, alpha: float = 1.0) -> None:
         """Centred text with a drop shadow, scaled and faded (for pops and stamps)."""
@@ -1238,7 +1365,7 @@ class Game:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="AR Shadow Fighter")
+    parser = argparse.ArgumentParser(description="ARena: Fit Fighter")
     parser.add_argument("--camera", type=int, default=C.CAMERA_INDEX, help="webcam index")
     parser.add_argument("--complexity", type=int, choices=(0, 1, 2), default=C.POSE_MODEL_COMPLEXITY,
                         help="MediaPipe Pose model complexity (0 = fastest)")

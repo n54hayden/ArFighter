@@ -1,1 +1,1 @@
-"""AR Shadow Fighter game package."""
+"""ARena: Fit Fighter game package."""

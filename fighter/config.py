@@ -9,7 +9,7 @@ Enemy distances are fractions of the enemy's height H.
 SCREEN_W = 1280
 SCREEN_H = 720
 FPS = 60
-WINDOW_TITLE = "AR Shadow Fighter"
+WINDOW_TITLE = "ARena: Fit Fighter"
 
 # --- Music -------------------------------------------------------------------
 MUSIC_DIR = "music"               # relative to ar_fighter.py; first .mp3/.ogg/.wav is the fight music
@@ -109,7 +109,7 @@ ENEMY_POSE_BLEND = 16.0
 # never mid-attack, stunned or knocked down.
 BOSSES = [
     {
-        "name": "SHADOW",
+        "name": "NIGHTFIST",
         "title": "THE NAMELESS BRAWLER",          # shown in the boss intro
         "music": "music/bosses/shadow",  # optional theme; falls back to the fight music
         "max_hp": 200,
@@ -125,7 +125,7 @@ BOSSES = [
         "headband": None,
     },
     {
-        "name": "SHADOW NINJA",
+        "name": "KAID",
         "title": "THE SILENT BLADE",          # shown in the boss intro
         "music": "music/bosses/shadow_ninja",  # optional theme; falls back to the fight music
         "max_hp": 300,
@@ -142,7 +142,7 @@ BOSSES = [
         "headband": (200, 30, 40),
     },
     {
-        "name": "NINJA MONK",
+        "name": "IRON LOTUS",
         "title": "MASTER OF THE IRON STAFF",          # shown in the boss intro
         "music": "music/bosses/ninja_monk",  # optional theme; falls back to the fight music
         "max_hp": 400,
@@ -160,7 +160,7 @@ BOSSES = [
         "staff": True,            # fights with a staff (arms hold it; it has its own hitbox)
     },
     {
-        "name": "EGYPTIAN SOLDIER",
+        "name": "ANUBIS",
         "title": "GUARDIAN OF THE SANDS",          # shown in the boss intro
         "music": "music/bosses/egyptian_soldier",  # optional theme; falls back to the fight music
         "max_hp": 160,            # the least health, but the hardest hitter
@@ -180,7 +180,7 @@ BOSSES = [
         "player_shield": True,    # you get a shield on your left arm for this fight
     },
     {
-        "name": "MAGE",
+        "name": "MALAKAR",
         "title": "THE ARCANE WARDEN",          # shown in the boss intro
         "music": "music/bosses/mage",  # optional theme; falls back to the fight music
         "max_hp": 260,
@@ -301,6 +301,9 @@ SCORE_POINTS = {                  # Fitness Score = performance x 40 + these per
 # --- Fight Summary calorie estimate (rough: no body weight is measured) -------------
 CALORIE_MET = 6.0                 # metabolic equivalent for active fitness boxing
 CALORIE_WEIGHT_KG = 70.0          # assumed body weight
+LEADERBOARD_FILE = "leaderboard.json"  # Fitness Score top 10 (next to ar_fighter.py)
+LEADERBOARD_SIZE = 10
+LEADERBOARD_NAME_LEN = 3          # arcade-style initials
 SAVE_FILE = "save_data.json"      # remembers the furthest boss you've reached (next to ar_fighter.py)
 
 # --- Colours -----------------------------------------------------------------
