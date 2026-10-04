@@ -1,8 +1,8 @@
-"""Sound effects: fight bell, punch impacts and victory cheer.
+"""Sound effects: fight bell, punch impacts, star throws and victory cheer.
 
 Files are found by keyword in their names (see SFX_KEYWORDS in config), so they can
 be renamed or replaced freely. A file holding several punches back to back is split
-on its silent gaps into separate hits, and a random one plays each time.
+on its silent gaps into separate hits, and a random one plays each time (same for throws).
 """
 from __future__ import annotations
 
@@ -95,7 +95,8 @@ class SoundEffects:
         self.bell: Optional[pygame.mixer.Sound] = None
         self.cheer: Optional[pygame.mixer.Sound] = None
         self.punches: List[pygame.mixer.Sound] = []
-        self._last_punch = -1
+        self.throws: List[pygame.mixer.Sound] = []
+        self._last: Dict[str, int] = {}
 
         files = sorted(p for p in folder.glob("*") if p.suffix.lower() in AUDIO_EXTENSIONS) if folder.is_dir() else []
         if not files:
@@ -119,6 +120,8 @@ class SoundEffects:
                 self.cheer = trim_leading_silence(pygame.mixer.Sound(str(found["cheer"])), rate)
             if "punch" in found:
                 self.punches = split_hits(pygame.mixer.Sound(str(found["punch"])), rate)
+            if "throw" in found:
+                self.throws = split_hits(pygame.mixer.Sound(str(found["throw"])), rate)
             self.available = True
         except pygame.error as exc:  # no audio device, unsupported file, ...
             print(f"[sfx] could not load sound effects: {exc}")
@@ -133,14 +136,20 @@ class SoundEffects:
     def bell_ring(self) -> None:
         self._play(self.bell, 1.0)
 
-    def punch(self, volume: float = 1.0) -> None:
-        if not self.punches:
+    def _play_random(self, key: str, sounds: List[pygame.mixer.Sound], volume: float) -> None:
+        if not sounds:
             return
-        i = random.randrange(len(self.punches))
-        if i == self._last_punch and len(self.punches) > 1:  # avoid the same sound twice in a row
-            i = (i + 1) % len(self.punches)
-        self._last_punch = i
-        self._play(self.punches[i], volume)
+        i = random.randrange(len(sounds))
+        if i == self._last.get(key) and len(sounds) > 1:  # avoid the same sound twice in a row
+            i = (i + 1) % len(sounds)
+        self._last[key] = i
+        self._play(sounds[i], volume)
+
+    def punch(self, volume: float = 1.0) -> None:
+        self._play_random("punch", self.punches, volume)
+
+    def throw(self, volume: float = 1.0) -> None:
+        self._play_random("throw", self.throws, volume)
 
     def cheer_crowd(self) -> None:
         self._play(self.cheer, 1.0)

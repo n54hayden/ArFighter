@@ -3,13 +3,17 @@
 
 Run:   python ar_fighter.py [--camera 0] [--complexity 1] [--debug]
 
+Flow: menu -> 3 s countdown to get into position -> calibration -> boss 1 -> boss 2.
+
 Controls:
+    Enter  start (menu) / fight again (after a fight)
     D      toggle hitbox / skeleton debug overlay
-    R      restart the fight
+    R      restart the current fight
     C      recalibrate (stand ~6 ft / 2 m back, full body in view)
     F      toggle fullscreen
     M      mute / unmute music and sound effects
-    Esc/Q  quit
+    Esc    back to the menu (quits from the menu)
+    Q      quit
 
 Threads:
     main   : Pygame events, game logic, collisions and rendering, locked to 60 FPS.
@@ -19,6 +23,7 @@ Threads:
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 from pathlib import Path
@@ -33,8 +38,11 @@ from fighter.effects import Effects
 from fighter.enemy import EnemyState, ShadowEnemy
 from fighter.geometry import intersects
 from fighter.player import PlayerTracker
+from fighter.projectiles import ThrowingStar
 
-MODE_CALIBRATE, MODE_FIGHT, MODE_OVER = "calibrate", "fight", "over"
+MODE_MENU, MODE_COUNTDOWN, MODE_CALIBRATE = "menu", "countdown", "calibrate"
+MODE_FIGHT, MODE_OVER = "fight", "over"
+MENU_ITEMS = ("Start Game", "Quit")
 
 
 class FramePacer:
@@ -81,11 +89,14 @@ class Game:
         except pygame.error:  # e.g. no GPU renderer available
             self.screen = pygame.display.set_mode(self.size)
         self.world = pygame.Surface(self.size).convert()
+        self._veil = pygame.Surface(self.size).convert()  # black, for dimming behind the menu
         self.pacer = FramePacer(C.FPS)
 
         self.font_small = pygame.font.Font(None, 22)
         self.font = pygame.font.Font(None, 32)
         self.font_big = pygame.font.Font(None, 96)
+        self.font_menu = pygame.font.Font(None, 44)
+        self.font_huge = pygame.font.Font(None, 150)
 
         self.camera = CameraThread(self.size, camera_index, complexity)
         self.camera.start()
@@ -97,16 +108,22 @@ class Game:
         self.music = Music(here / C.MUSIC_DIR)
         self.sfx = SoundEffects(here / C.SFX_DIR)
 
-        self.mode = MODE_CALIBRATE
+        self.mode = MODE_MENU
         self.debug = debug
         self.running = True
         self.background = None
         self.last_frame_id = -1
         self.pose_ms = 0.0
+        self.boss_index = 0
+        self.enemy_ready = False      # enemy already placed for the upcoming fight
+        self.countdown_t = 0.0
         self.over_timer = 0.0
         self.result = ""
+        self.stars = []
+        self.menu_index = 0
+        self.menu_rects = []
         self.trail_player = float(C.PLAYER_MAX_HP)
-        self.trail_enemy = float(C.ENEMY_MAX_HP)
+        self.trail_enemy = self.enemy.max_hp
 
     # --- main loop -----------------------------------------------------------
     def run(self) -> None:
@@ -128,24 +145,53 @@ class Game:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
+            elif self.mode == MODE_MENU and event.type == pygame.MOUSEMOTION:
+                for i, rect in enumerate(self.menu_rects):
+                    if rect.collidepoint(event.pos):
+                        self.menu_index = i
+            elif self.mode == MODE_MENU and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                for i, rect in enumerate(self.menu_rects):
+                    if rect.collidepoint(event.pos):
+                        self._menu_select(i)
             elif event.type == pygame.KEYDOWN:
-                if event.key in (pygame.K_ESCAPE, pygame.K_q):
-                    self.running = False
-                elif event.key == pygame.K_d:
-                    self.debug = not self.debug
-                elif event.key == pygame.K_r and self.player.calibrated:
-                    self._begin_fight()
-                elif event.key == pygame.K_c:
-                    self.player.reset_calibration()
-                    self.effects.clear()
-                    self.music.stop()
-                    self.sfx.stop()
-                    self.mode = MODE_CALIBRATE
-                elif event.key == pygame.K_f:
-                    pygame.display.toggle_fullscreen()
-                elif event.key == pygame.K_m:
-                    self.music.toggle_mute()
-                    self.sfx.muted = self.music.muted if self.music.available else not self.sfx.muted
+                self._handle_key(event.key)
+
+    def _handle_key(self, key: int) -> None:
+        if key == pygame.K_q:
+            self.running = False
+        elif key == pygame.K_f:
+            pygame.display.toggle_fullscreen()
+        elif key == pygame.K_m:
+            self.music.toggle_mute()
+            self.sfx.muted = self.music.muted if self.music.available else not self.sfx.muted
+        elif key == pygame.K_d:
+            self.debug = not self.debug
+        elif self.mode == MODE_MENU:
+            if key == pygame.K_ESCAPE:
+                self.running = False
+            elif key in (pygame.K_UP, pygame.K_w):
+                self.menu_index = (self.menu_index - 1) % len(MENU_ITEMS)
+            elif key in (pygame.K_DOWN, pygame.K_s):
+                self.menu_index = (self.menu_index + 1) % len(MENU_ITEMS)
+            elif key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                self._menu_select(self.menu_index)
+        elif key == pygame.K_ESCAPE:
+            self._open_menu()
+        elif key == pygame.K_c:
+            self.player.reset_calibration()
+            self._start_countdown()
+        elif key == pygame.K_r or (key in (pygame.K_RETURN, pygame.K_KP_ENTER) and self.mode == MODE_OVER):
+            if self.mode in (MODE_FIGHT, MODE_OVER):
+                if self.result == "CHAMPION" and self.mode == MODE_OVER:
+                    self.boss_index = 0  # beat everyone: start over from the first boss
+                self._start_countdown()
+
+    def _menu_select(self, index: int) -> None:
+        if MENU_ITEMS[index] == "Quit":
+            self.running = False
+        else:
+            self.boss_index = 0
+            self._start_countdown()
 
     def _poll_camera(self, now: float) -> None:
         """Non-blocking: picks up the newest camera snapshot if there is one."""
@@ -157,16 +203,49 @@ class Game:
         self.background = pygame.image.frombuffer(frame.image.tobytes(), self.size, "RGB").convert()
         self.player.ingest(frame.landmarks, frame.capture_time, now)
 
-    # --- game logic ----------------------------------------------------------
+    # --- game flow -----------------------------------------------------------
+    @property
+    def boss(self) -> dict:
+        return C.BOSSES[self.boss_index]
+
+    def _stop_fight(self) -> None:
+        self.music.stop()
+        self.effects.clear()
+        self.stars.clear()
+
+    def _open_menu(self) -> None:
+        self._stop_fight()
+        self.sfx.stop()
+        self.mode = MODE_MENU
+
+    def _start_countdown(self) -> None:
+        """Gives the player a few seconds to get into position before calibrating or fighting."""
+        self._stop_fight()
+        self.mode = MODE_COUNTDOWN
+        self.countdown_t = float(C.COUNTDOWN_SECONDS)
+        self.result = ""
+        self.enemy_ready = False
+        if self.player.calibrated:
+            self._place_enemy()  # show the upcoming boss during the countdown
+
+    def _place_enemy(self) -> None:
+        p = self.player
+        com = p.com_x() if p.tracked else self.size[0] * 0.5
+        spawn_x = self.size[0] * (0.82 if com < self.size[0] * 0.5 else 0.18)
+        self.enemy.reset(ground_y=p.ground_y, height=p.body_height, x=spawn_x, boss=self.boss)
+        self.enemy.facing = 1 if com > spawn_x else -1
+        self.enemy_ready = True
+
     def _begin_fight(self) -> None:
         p = self.player
         p.reset_fight()
-        com = p.com_x() if p.tracked else self.size[0] * 0.5
-        spawn_x = self.size[0] * (0.82 if com < self.size[0] * 0.5 else 0.18)
-        self.enemy.reset(ground_y=p.ground_y, height=p.body_height, x=spawn_x)
+        if not self.enemy_ready:
+            self._place_enemy()
+        self.enemy_ready = False
         self.effects.clear()
+        self.stars.clear()
         self.trail_player = float(C.PLAYER_MAX_HP)
-        self.trail_enemy = float(C.ENEMY_MAX_HP)
+        self.trail_enemy = self.enemy.max_hp
         self.mode = MODE_FIGHT
         self.sfx.stop()  # cut off a victory cheer still playing from the last fight
         self.sfx.bell_ring()
@@ -182,37 +261,90 @@ class Game:
         self.trail_player += (self.player.hp - self.trail_player) * min(1.0, dt * 3)
         self.trail_enemy += (self.enemy.hp - self.trail_enemy) * min(1.0, dt * 3)
 
+        if self.mode == MODE_MENU:
+            return
+        if self.mode == MODE_COUNTDOWN:
+            self.countdown_t -= dt
+            if self.countdown_t <= 0:
+                if self.player.calibrated:
+                    self._begin_fight()
+                else:
+                    self.mode = MODE_CALIBRATE
+                    self.player.calibration_enabled = True
+            return
         if self.mode == MODE_CALIBRATE:
             if self.player.calibrated:
                 self._begin_fight()
             return
 
         self.enemy.update(dt, self.player)
-        if self.enemy.pop_landed():  # shadow hit the floor after a knockdown
+        if self.enemy.pop_landed():  # boss hit the floor after a knockdown
             self.effects.shake(12)
             self.effects.burst((self.enemy.x - self.enemy.facing * self.enemy.H * 0.4, self.enemy.ground_y),
                                (60, 50, 70), 24, 300, size=(3.0, 7.0), gravity=600)
             self.sfx.punch(0.6)
+        self._update_stars(dt)
         if self.mode == MODE_FIGHT:
             self.music.set_paused(not self.player.tracked)
             if self.player.tracked:
                 self._resolve_player_attacks()
                 self._resolve_enemy_strike()
             if self.enemy.state is EnemyState.DEAD:
-                self._end("VICTORY")
+                self._end("VICTORY" if self.boss_index + 1 < len(C.BOSSES) else "CHAMPION")
             elif self.player.hp <= 0:
                 self._end("DEFEAT")
         elif self.mode == MODE_OVER:
             self.over_timer += dt
+            if self.result == "VICTORY" and self.over_timer >= C.NEXT_BOSS_DELAY:
+                self.boss_index += 1
+                self._start_countdown()
 
     def _end(self, result: str) -> None:
         self.mode = MODE_OVER
         self.result = result
         self.music.set_paused(False)  # a paused track can't fade out
         self.music.fade_out()
-        if result == "VICTORY":
+        if result != "DEFEAT":
             self.sfx.cheer_crowd()
         self.over_timer = 0.0
+
+    def _update_stars(self, dt: float) -> None:
+        """Move throwing stars and hit the player's head/torso. Forearms don't stop them: duck!"""
+        enemy, player = self.enemy, self.player
+        for start, aim in enemy.pop_thrown():
+            star = ThrowingStar(start, aim, C.STAR_SPEED * enemy.H, C.STAR_RADIUS * enemy.H)
+            star.side = 1 if start[0] > player.com_x() else -1  # which side of the player it came from
+            self.stars.append(star)
+            self.sfx.throw()
+        live = self.mode == MODE_FIGHT and player.tracked
+        remaining = []
+        for star in self.stars:
+            star.update(dt)
+            if star.offscreen(*self.size):
+                continue
+            if live and not star.passed_player:
+                hit = None
+                head, torso = player.head(), player.torso()
+                if head is not None and intersects(star.collider, head):
+                    hit = "head"
+                elif torso is not None and intersects(star.collider, torso):
+                    hit = "torso"
+                if hit:
+                    damage = C.STAR_DAMAGE * (C.HEAD_HIT_MULTIPLIER if hit == "head" else 1.0)
+                    player.hp = max(0.0, player.hp - damage)
+                    pos = (star.x, star.y)
+                    self.effects.burst(pos, (255, 60, 60), 20, 420)
+                    self.effects.burst(pos, (220, 220, 235), 10, 300)
+                    self.effects.text(f"Throwing Star! -{damage:.0f}", (pos[0], pos[1] - 30), (255, 90, 90), 42)
+                    self.effects.flash((180, 0, 0), 110)
+                    self.effects.shake(10)
+                    self.sfx.punch(0.9)
+                    continue
+                if (star.x - player.com_x()) * star.side < -0.5 * player.unit:
+                    star.passed_player = True
+                    self.effects.text("DUCKED!", (player.com_x(), star.y - 30), (120, 255, 160), 44)
+            remaining.append(star)
+        self.stars = remaining
 
     def _resolve_player_attacks(self) -> None:
         """Punches (fast fists) and kicks (fast feet) that reach the shadow's body or head."""
@@ -236,6 +368,10 @@ class Game:
             if not any(intersects(limb, hb) for hb in hurtboxes):
                 continue
 
+            if enemy.try_dodge():
+                cooldowns[side] = C.KICK_COOLDOWN if kick else C.PUNCH_COOLDOWN
+                self.effects.text("DODGED", (ec[0], ec[1] - enemy.H * 0.4), (200, 200, 255), 44)
+                return
             power = min(1.0, (speed - threshold) / threshold)
             lo, hi = (C.KICK_DAMAGE_MIN, C.KICK_DAMAGE_MAX) if kick else (C.PUNCH_DAMAGE_MIN, C.PUNCH_DAMAGE_MAX)
             damage = round(lo + (hi - lo) * power)
@@ -334,19 +470,60 @@ class Game:
         else:
             world.fill((12, 10, 18))
 
-        if self.mode != MODE_CALIBRATE:
+        show_enemy = self.mode in (MODE_FIGHT, MODE_OVER) or (self.mode == MODE_COUNTDOWN and self.enemy_ready)
+        if show_enemy:
             self.enemy.draw(world)
+        for star in self.stars:
+            star.draw(world)
         self.effects.draw_world(world)
-        if self.debug or self.mode == MODE_CALIBRATE:
+        if self.mode in (MODE_COUNTDOWN, MODE_CALIBRATE) or (self.debug and self.mode != MODE_MENU):
             self.player.draw_debug(world, self.font_small, colliders=self.debug)
-        if self.debug and self.mode != MODE_CALIBRATE:
+        if self.debug and show_enemy:
             self.enemy.draw_debug(world)
 
         self.screen.fill((0, 0, 0))
         self.screen.blit(world, self.effects.shake_offset())
         self.effects.draw_overlay(self.screen)
-        self._draw_hud()
+        if self.mode == MODE_MENU:
+            self._draw_menu()
+        else:
+            self._draw_hud()
         pygame.display.flip()
+
+    def _dim(self, alpha: int) -> None:
+        self._veil.set_alpha(alpha)
+        self.screen.blit(self._veil, (0, 0))
+
+    def _draw_menu(self) -> None:
+        w, h = self.size
+        self._dim(170)
+        self._text("SHADOW FIGHTER", (w / 2, h * 0.17), self.font_huge, (235, 225, 255), "center")
+        self._text("An AR fighting game: your body is the controller", (w / 2, h * 0.28), self.font,
+                   (200, 190, 230), "center")
+
+        self.menu_rects = []
+        for i, label in enumerate(MENU_ITEMS):
+            rect = pygame.Rect(0, 0, 320, 64)
+            rect.center = (w // 2, int(h * 0.43) + i * 84)
+            selected = i == self.menu_index
+            pygame.draw.rect(self.screen, (120, 70, 200) if selected else (40, 34, 56), rect, border_radius=12)
+            pygame.draw.rect(self.screen, (220, 200, 255) if selected else (90, 80, 120), rect, 3, border_radius=12)
+            self._text(label, rect.center, self.font_menu, (255, 255, 255), "center")
+            self.menu_rects.append(rect)
+
+        tips = [
+            "Stand about 6 ft (2 m) back with your whole body in view.",
+            "Punch and kick sideways at the boss.  Raise your forearms to block.",
+            "Jump over low sweeps.  Duck under throwing stars.  Step back to get out of range.",
+            "Beat the Shadow, then the Shadow Ninja.",
+        ]
+        for i, tip in enumerate(tips):
+            self._text(tip, (w / 2, h * 0.67 + i * 30), self.font, (210, 210, 220), "center")
+        self._text("Up/Down + Enter or click    [M] mute    [F] fullscreen    [Esc] quit",
+                   (w / 2, h - 30), self.font_small, (170, 170, 185), "center")
+        if self.camera.error:
+            self._text(f"Camera error: {self.camera.error}", (w / 2, h - 60), self.font_small, (255, 90, 90),
+                       "center")
 
     def _text(self, msg, pos, font=None, color=(255, 255, 255), anchor="topleft") -> None:
         font = font or self.font
@@ -367,12 +544,14 @@ class Game:
         w, h = self.size
         cam_err = self.camera.error
 
-        if self.mode != MODE_CALIBRATE:
+        if self.mode in (MODE_FIGHT, MODE_OVER):
             bw = int(w * 0.38)
             self._bar(30, 30, bw, 22, self.player.hp, self.trail_player, C.PLAYER_MAX_HP, C.PLAYER_BAR)
-            self._bar(w - 30 - bw, 30, bw, 22, self.enemy.hp, self.trail_enemy, C.ENEMY_MAX_HP, C.ENEMY_BAR, True)
+            self._bar(w - 30 - bw, 30, bw, 22, self.enemy.hp, self.trail_enemy, self.enemy.max_hp, C.ENEMY_BAR,
+                      True)
             self._text("YOU", (30, 58), self.font)
-            self._text("SHADOW", (w - 30, 58), self.font, anchor="topright")
+            self._text(self.enemy.name, (w - 30, 58), self.font, anchor="topright")
+            self._text(f"ROUND {self.boss_index + 1}/{len(C.BOSSES)}", (w / 2, 30), self.font, anchor="midtop")
             in_range = self.player.in_range(C.PLAYER_PUNCH_MIN_DEPTH)
             self._text(f"RANGE {'IN' if in_range else 'OUT'}  ({self.player.depth_ratio:.2f})", (30, 86),
                        self.font_small, (120, 255, 160) if in_range else (255, 200, 80))
@@ -382,7 +561,7 @@ class Game:
         stats = (f"FPS {self.pacer.fps:4.0f}   CAM {self.camera.camera_fps:4.1f}   "
                  f"POSE {self.pose_ms:4.1f} ms   [D] debug {'ON' if self.debug else 'off'}   "
                  "[R] restart   [C] calibrate   [F] fullscreen   "
-                 f"[M] {'unmute' if self.music.muted or self.sfx.muted else 'mute'}   [Esc] quit")
+                 f"[M] {'unmute' if self.music.muted or self.sfx.muted else 'mute'}   [Esc] menu")
         self._text(stats, (14, h - 26), self.font_small, (200, 200, 210))
 
         if cam_err:
@@ -393,10 +572,20 @@ class Game:
             self._text("Starting camera...", (w / 2, h / 2), self.font_big, anchor="center")
             return
 
-        if self.mode == MODE_CALIBRATE:
+        if self.mode == MODE_COUNTDOWN:
+            self._text(f"ROUND {self.boss_index + 1}: {self.boss['name']}", (w / 2, h * 0.12), self.font_big,
+                       (235, 225, 255), "center")
+            self._text("Get into position: about 6 ft (2 m) back, whole body in view", (w / 2, h * 0.21),
+                       self.font, anchor="center")
+            n = max(1, math.ceil(self.countdown_t))
+            frac = n - self.countdown_t  # 0 -> 1 within each second
+            size = int(220 + 120 * (1 - frac))
+            digit = pygame.font.Font(None, size).render(str(n), True, (255, 255, 255))
+            digit.set_alpha(int(255 * min(1.0, 1.4 - frac)))
+            self.screen.blit(digit, digit.get_rect(center=(w // 2, int(h * 0.5))))
+        elif self.mode == MODE_CALIBRATE:
             self._text("CALIBRATION", (w / 2, h * 0.12), self.font_big, anchor="center")
-            self._text("Stand about 6 ft (2 m) back with your whole body in view, then hold still.",
-                       (w / 2, h * 0.21), self.font, anchor="center")
+            self._text("Hold still with your whole body in view.", (w / 2, h * 0.21), self.font, anchor="center")
             if not self.player.tracked:
                 self._text("No body detected: step into view", (w / 2, h * 0.27), self.font,
                            (255, 200, 80), "center")
@@ -406,10 +595,18 @@ class Game:
         elif self.mode == MODE_FIGHT and not self.player.tracked:
             self._text("STEP INTO VIEW", (w / 2, h * 0.45), self.font_big, (255, 200, 80), "center")
         elif self.mode == MODE_OVER and self.over_timer > 0.8:
-            color = (120, 255, 160) if self.result == "VICTORY" else (255, 90, 90)
-            self._text(self.result, (w / 2, h * 0.4), self.font_big, color, "center")
-            self._text("Press R to fight again, C to recalibrate, Esc to quit", (w / 2, h * 0.5),
-                       self.font, anchor="center")
+            if self.result == "VICTORY":
+                nxt = C.BOSSES[self.boss_index + 1]["name"]
+                self._text("VICTORY", (w / 2, h * 0.4), self.font_big, (120, 255, 160), "center")
+                self._text(f"Next up: {nxt}", (w / 2, h * 0.5), self.font, anchor="center")
+            elif self.result == "CHAMPION":
+                self._text("CHAMPION!", (w / 2, h * 0.4), self.font_big, (255, 220, 90), "center")
+                self._text("You beat every boss.  Enter/R to play again, Esc for the menu", (w / 2, h * 0.5),
+                           self.font, anchor="center")
+            else:
+                self._text("DEFEAT", (w / 2, h * 0.4), self.font_big, (255, 90, 90), "center")
+                self._text(f"Enter/R to retry {self.enemy.name}, C to recalibrate, Esc for the menu",
+                           (w / 2, h * 0.5), self.font, anchor="center")
 
 
 def main() -> None:

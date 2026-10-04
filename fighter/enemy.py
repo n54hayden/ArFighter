@@ -48,6 +48,9 @@ BLOCK_POSE = _pose(lean=-6, fs=70, fe=105, rs=55, re=115, fh=75, fk=-105)  # kne
 FALL_POSE = _pose(lean=-10, fs=150, fe=20, rs=120, re=30, fh=40, fk=-30, rh=0, rk=-10)
 DOWN_POSE = _pose(lean=0, fs=170, fe=10, rs=150, re=20, fh=25, fk=-50, rh=10, rk=-25)
 GETUP_POSE = _pose(lean=30, rh=60, rk=-110, fh=70, fk=-120, fs=50, fe=90, rs=40, re=110)
+DODGE_POSE = _pose(lean=-30, fs=60, fe=110, rs=45, re=120, fh=35, fk=-60, rh=-25, rk=-30)
+STAR_WIND = _pose(lean=-8, rs=-70, re=100, fs=70, fe=60)          # throwing hand cocked back
+STAR_THROW = _pose(lean=18, rs=92, re=5, fs=20, fe=120, dx=0.04)  # arm whips forward
 KNOCKDOWN_TILT = 88.0  # degrees the body rotates backward when it falls
 
 
@@ -82,6 +85,7 @@ class AttackSpec:
     strike_radius: float   # fraction of H
     phases: Tuple[Phase, ...]
     unblockable: bool = False
+    ranged: bool = False   # throws a projectile at the end of the strike phase instead of hitting
 
 
 def _attack(name, label, limb, target, damage, chip, min_depth, radius, wind, ext, t_wind, t_strike, t_hold, t_rec,
@@ -105,6 +109,12 @@ ATTACKS: Dict[str, AttackSpec] = {a.name: a for a in (
             0.55, 0.16, 0.12, 0.55, live_from=0.75),
     _attack("low_sweep", "Low Sweep", "front_foot", "legs", 12, 1.0, 0.80, 0.065, SWEEP_WIND, SWEEP_EXT,
             0.60, 0.20, 0.15, 0.55, live_from=0.3, unblockable=True),
+    AttackSpec("throwing_star", "Throwing Star", "rear_hand", "head", C.STAR_DAMAGE, 1.0, 0.0, C.STAR_RADIUS, (
+        Phase(STAR_WIND, 0.5),
+        Phase(STAR_THROW, 0.12, ease="out"),
+        Phase(STAR_THROW, 0.10),
+        Phase(GUARD, 0.40),
+    ), unblockable=True, ranged=True),
 )}
 
 
@@ -113,6 +123,7 @@ class EnemyState(Enum):
     APPROACH = auto()
     ATTACK = auto()
     STUNNED = auto()
+    DODGE = auto()
     KNOCKDOWN = auto()
     DEAD = auto()
 
@@ -155,14 +166,17 @@ class ShadowEnemy:
         self.sw, self.sh = screen_w, screen_h
         self.font = pygame.font.Font(None, 40)
         self.debug_font = pygame.font.Font(None, 22)
-        self.reset(ground_y=screen_h - 10, height=screen_h * 0.75, x=screen_w * 0.75)
+        self.reset(ground_y=screen_h - 10, height=screen_h * 0.75, x=screen_w * 0.75, boss=C.BOSSES[0])
 
-    def reset(self, ground_y: float, height: float, x: float) -> None:
+    def reset(self, ground_y: float, height: float, x: float, boss: dict) -> None:
+        self.boss = boss
+        self.name = boss["name"]
+        self.max_hp = float(boss["max_hp"])
         self.ground_y = ground_y
         self.H = height
         self.x = x
         self.facing = -1
-        self.hp = float(C.ENEMY_MAX_HP)
+        self.hp = self.max_hp
         self.state = EnemyState.IDLE
         self.state_t = 0.0
         self.idle_time = C.ENEMY_FIRST_ATTACK_DELAY
@@ -188,7 +202,10 @@ class ShadowEnemy:
         self.tilt = 0.0          # knockdown rotation (degrees, backward)
         self.down_t = 0.0
         self.block_t = 0.0
+        self.dodge_t = 0.0
+        self.dodge_cooldown = 0.0
         self._landed = False
+        self._thrown: List[Tuple[Vec, Vec]] = []
         self._reach = {name: self._strike_offset(spec) for name, spec in ATTACKS.items()}
         glow_r = max(8, int(self.H * 0.09))
         self._glow = _make_glow(glow_r, (255, 50, 30))
@@ -258,6 +275,8 @@ class ShadowEnemy:
 
     def _strike_offset(self, spec: AttackSpec) -> float:
         """Furthest forward distance the striking limb reaches while its hitbox is live."""
+        if spec.ranged:
+            return 0.0
         i = next(i for i, ph in enumerate(spec.phases) if ph.active)
         start, ph = spec.phases[i - 1].pose, spec.phases[i]
         best = 0.0
@@ -270,7 +289,7 @@ class ShadowEnemy:
     # --- colliders -----------------------------------------------------------
     @property
     def can_be_hit(self) -> bool:
-        return self.state not in (EnemyState.DEAD, EnemyState.KNOCKDOWN)
+        return self.state not in (EnemyState.DEAD, EnemyState.KNOCKDOWN, EnemyState.DODGE)
 
     def hurtboxes(self) -> List:
         if not self.can_be_hit:
@@ -332,7 +351,7 @@ class ShadowEnemy:
         if not self.can_be_hit:
             return "none"
         blocked = (self.state in (EnemyState.IDLE, EnemyState.APPROACH)
-                   and random.random() < C.ENEMY_KICK_BLOCK_CHANCE)
+                   and random.random() < self.boss["kick_block_chance"])
         self.hp = max(0.0, self.hp - (damage * C.ENEMY_KICK_BLOCK_DAMAGE if blocked else damage))
         self.flash_t = 0.1
         if self.hp <= 0:
@@ -350,6 +369,22 @@ class ShadowEnemy:
         self.vx = -self.facing * C.ENEMY_KNOCKDOWN_KNOCKBACK * self.H
         return "knockdown"
 
+    def try_dodge(self) -> bool:
+        """Called when a punch or kick is about to land. Returns True if the boss dodged it."""
+        if (self.state not in (EnemyState.IDLE, EnemyState.APPROACH) or self.block_t > 0
+                or self.dodge_cooldown > 0 or random.random() >= self.boss["dodge_chance"]):
+            return False
+        self.state = EnemyState.DODGE
+        self.dodge_t = C.ENEMY_DODGE_TIME
+        self.dodge_cooldown = C.ENEMY_DODGE_COOLDOWN
+        self.vx = -self.facing * C.ENEMY_DODGE_SPEED * self.H
+        return True
+
+    def pop_thrown(self) -> List[Tuple[Vec, Vec]]:
+        """Projectiles released since the last call, as (start, aim point) pairs."""
+        thrown, self._thrown = self._thrown, []
+        return thrown
+
     def pop_landed(self) -> bool:
         """True once, on the frame the shadow hits the floor after a knockdown."""
         landed, self._landed = self._landed, False
@@ -361,8 +396,8 @@ class ShadowEnemy:
 
     # --- AI ------------------------------------------------------------------
     def _pick_attack(self) -> AttackSpec:
-        names = list(C.ENEMY_ATTACK_WEIGHTS)
-        weights = [C.ENEMY_ATTACK_WEIGHTS[n] for n in names]
+        names = list(self.boss["attack_weights"])
+        weights = [self.boss["attack_weights"][n] for n in names]
         return ATTACKS[random.choices(names, weights)[0]]
 
     def _enter_idle(self, duration: float) -> None:
@@ -373,6 +408,13 @@ class ShadowEnemy:
 
     def _desired_x(self, player, spec: AttackSpec) -> float:
         tx = player.target_point(spec.target)[0]
+        if spec.ranged:  # back off to throwing distance
+            stand_off = C.STAR_THROW_DISTANCE * self.sw
+            side = -self.facing
+            d = tx + side * stand_off
+            if not self.sw * 0.06 <= d <= self.sw * 0.94:
+                d = tx - side * stand_off
+            return max(self.sw * 0.06, min(self.sw * 0.94, d))
         # Stand so the fully extended strike lands just in front of the target's centre,
         # which keeps our guard hand outside the player's guard until we strike.
         stand_off = self._reach[spec.name] + C.ENEMY_AIM_OFFSET * player.unit
@@ -396,7 +438,7 @@ class ShadowEnemy:
     def _update_attack(self, dt: float, player, paused: bool) -> None:
         spec = self.attack
         ph = spec.phases[self.phase_i]
-        duration = ph.duration / C.ENEMY_ATTACK_SPEED
+        duration = ph.duration / self.boss["attack_speed"]
         self.phase_t += dt
         t = min(1.0, self.phase_t / duration)
         self.phase_progress = _ease(t, ph.ease)
@@ -408,6 +450,10 @@ class ShadowEnemy:
             self.x += max(-max_step, min(max_step, diff))
 
         if self.phase_t >= duration:
+            if spec.ranged and self.phase_i == 1:  # release at the end of the throwing motion
+                hand = self._limb_end(self.sk, spec.limb)
+                aim = (player.target_point("head")[0], player.standing_head_y())
+                self._thrown.append((hand, aim))
             self.phase_t -= duration
             self.phase_progress = 0.0
             self.phase_from = ph.pose
@@ -417,8 +463,8 @@ class ShadowEnemy:
                     self.queued = ATTACKS["cross"]
                     self._enter_idle(0.05)
                 else:
-                    aggression = 1.0 + 0.6 * (1.0 - self.hp / C.ENEMY_MAX_HP)
-                    self._enter_idle(random.uniform(C.ENEMY_IDLE_MIN, C.ENEMY_IDLE_MAX) / aggression)
+                    aggression = 1.0 + 0.6 * (1.0 - self.hp / self.max_hp)
+                    self._enter_idle(random.uniform(self.boss["idle_min"], self.boss["idle_max"]) / aggression)
 
     def _idle_pose(self) -> Pose:
         p = dict(GUARD)
@@ -443,6 +489,7 @@ class ShadowEnemy:
         self.flash_t = max(0.0, self.flash_t - dt)
         self.stun_immunity = max(0.0, self.stun_immunity - dt)
         self.block_t = max(0.0, self.block_t - dt)
+        self.dodge_cooldown = max(0.0, self.dodge_cooldown - dt)
         if self.state is EnemyState.DEAD:
             return
 
@@ -461,6 +508,13 @@ class ShadowEnemy:
                 self.stun_immunity = C.ENEMY_STUN_IMMUNITY
         elif self.state is EnemyState.KNOCKDOWN:
             target = self._update_knockdown(dt)
+        elif self.state is EnemyState.DODGE:
+            self.x += self.vx * dt
+            self.vx *= math.exp(-6.0 * dt)
+            self.dodge_t -= dt
+            target = DODGE_POSE
+            if self.dodge_t <= 0:
+                self._enter_idle(random.uniform(0.1, 0.3))
         elif self.block_t > 0:
             target = BLOCK_POSE
         elif paused:
@@ -570,7 +624,7 @@ class ShadowEnemy:
                     if grow:
                         pygame.draw.polygon(surf, color, part[1], int(grow * 2))
 
-        paint(back + front, C.ENEMY_RIM, rim)
+        paint(back + front, self.boss["rim"], rim)
         paint(back, C.ENEMY_FLASH if flashing else C.ENEMY_BACK, 0)
         paint(front, C.ENEMY_FLASH if flashing else C.ENEMY_BODY, 0)
 
@@ -581,17 +635,40 @@ class ShadowEnemy:
         ew, eh = max(4, int(0.024 * H)), max(2, int(0.009 * H))
         pygame.draw.ellipse(surf, C.ENEMY_EYES_ANGRY if angry else C.ENEMY_EYES,
                             pygame.Rect(int(eye[0] - ew / 2), int(eye[1] - eh / 2), ew, eh))
+        if self.boss.get("headband"):
+            self._draw_headband(surf, sk, self.boss["headband"])
 
         # Telegraph: glowing limb during the wind-up.
         if self.in_windup:
-            progress = min(1.0, self.phase_t / (self.attack.phases[0].duration / C.ENEMY_ATTACK_SPEED))
+            progress = min(1.0, self.phase_t / (self.attack.phases[0].duration / self.boss["attack_speed"]))
             glow = self._glow.copy()
             glow.fill((int(255 * (0.4 + 0.6 * progress)),) * 3, special_flags=pygame.BLEND_MULT)
             p = self._limb_end(sk, self.attack.limb)
             surf.blit(glow, glow.get_rect(center=_ipt(p)), special_flags=pygame.BLEND_ADD)
             if self.attack.unblockable and int(self.anim_t * 8) % 2 == 0:
-                label = self.font.render("JUMP!", True, (255, 220, 80))
-                surf.blit(label, label.get_rect(center=(int(self.x), int(self.ground_y - 0.55 * H))))
+                if self.attack.ranged:
+                    label = self.font.render("DUCK!", True, (255, 220, 80))
+                    pos = (int(self.x), int(sk["head"][1] - 0.13 * H))
+                else:
+                    label = self.font.render("JUMP!", True, (255, 220, 80))
+                    pos = (int(self.x), int(self.ground_y - 0.55 * H))
+                surf.blit(label, label.get_rect(center=pos))
+
+    def _draw_headband(self, surf: pygame.Surface, sk: Dict[str, Vec], color) -> None:
+        """Ninja headband: a band across the forehead with two tails fluttering behind."""
+        H, f = self.H, self.facing
+        head, sp = sk["head"], sk["spine"]
+        n = (-sp[1], sp[0])
+        band_c = _add(head, sp, 0.012 * H)
+        w = max(2, int(0.016 * H))
+        pygame.draw.line(surf, color, _add(band_c, n, HEAD_R * H), _add(band_c, n, -HEAD_R * H), w)
+        knot = (band_c[0] - f * HEAD_R * H * 0.9, band_c[1])
+        for i, spread in enumerate((0.0, 0.025)):
+            pts = [knot]
+            for j in range(1, 6):
+                wave = math.sin(self.anim_t * 14 + j * 0.9 + i * 1.7) * 0.012 * H
+                pts.append((knot[0] - f * 0.03 * H * j, knot[1] + (spread + 0.006 * j) * H + wave))
+            pygame.draw.lines(surf, color, False, pts, max(2, w - i))
 
     def draw_debug(self, surf: pygame.Surface) -> None:
         if self.state is EnemyState.DEAD:

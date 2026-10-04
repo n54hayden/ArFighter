@@ -64,10 +64,12 @@ class PlayerTracker:
         self._now = 0.0
 
         self.calibrated = False
+        self.calibration_enabled = False          # the game turns this on once you're in position
         self.calib_time = 0.0
         self._calib_samples: List[dict] = []
         self.base_torso = 1.0
         self.base_shoulder = 1.0
+        self._head_ref = self.sh * 0.3
         self.depth_ratio = 1.0                    # current size / calibrated size
         self.unit = 100.0                         # current torso length in pixels
         self.ground_y = float(self.sh)            # floor line for the enemy
@@ -137,7 +139,7 @@ class PlayerTracker:
 
         if self.calibrated:
             self._update_jump(raw, dt_cap, now)
-        else:
+        elif self.calibration_enabled:
             self._collect_calibration_sample(raw, torso, shoulder)
 
     # --- per game frame ------------------------------------------------------
@@ -146,7 +148,7 @@ class PlayerTracker:
         for side in SIDES:
             self.punch_cooldown[side] = max(0.0, self.punch_cooldown[side] - dt)
             self.kick_cooldown[side] = max(0.0, self.kick_cooldown[side] - dt)
-        if not self.calibrated and self.tracked:
+        if not self.calibrated and self.calibration_enabled and self.tracked:
             self.calib_time += dt
             if self.calib_time >= C.CALIBRATION_SECONDS and len(self._calib_samples) >= 8:
                 self._finish_calibration()
@@ -187,9 +189,12 @@ class PlayerTracker:
             self.ground_y = hip + 1.65 * self.base_torso          # floor is off-screen; estimate it
         nose_count = sum(1 for x in s if x["nose"] is not None)
         if nose_count:
-            self.body_height = (self.ground_y - med("nose")) * 1.1
+            nose = med("nose")
+            self.body_height = (self.ground_y - nose) * 1.1
         else:
+            nose = hip - 1.55 * self.base_torso
             self.body_height = self.base_torso * 3.4
+        self._head_ref = nose - 0.1 * self.base_torso  # same point as head().center
         self.body_height = max(self.sh * 0.3, min(self.sh * 1.2, self.body_height))
         self._ground_offset = {k: 0.0 for k in self._ground_ref}
         self.depth_ratio = 1.0
@@ -236,6 +241,11 @@ class PlayerTracker:
     @property
     def is_jumping(self) -> bool:
         return self.airborne or (self._now - self._land_time) < C.JUMP_GRACE
+
+    def standing_head_y(self) -> float:
+        """Where your head is when standing upright at your current distance (stars aim here)."""
+        horizon = self.sh * C.HORIZON_Y_FRAC
+        return horizon + (self._head_ref - horizon) * self.depth_ratio
 
     def in_range(self, min_depth: float) -> bool:
         return self.depth_ratio >= min_depth

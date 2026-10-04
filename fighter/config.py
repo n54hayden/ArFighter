@@ -24,6 +24,7 @@ SFX_KEYWORDS = {                  # a file is used for a role if its name contai
     "bell": ("bell",),
     "punch": ("punch", "impact", "hit"),
     "cheer": ("cheer", "crowd", "applause"),
+    "throw": ("throw", "whoosh", "swish"),
 }
 
 # --- Camera / pose thread ----------------------------------------------------
@@ -73,38 +74,69 @@ JUMP_RELEASE = 0.08               # ...and drop back below this to land
 JUMP_GRACE = 0.15                 # seconds a jump still counts after landing (latency)
 GROUND_ADAPT_TAU = 1.0            # seconds; how fast the floor baseline drifts while grounded
 
-# --- Enemy -------------------------------------------------------------------
-ENEMY_MAX_HP = 200
+# --- Enemy (shared by every boss) --------------------------------------------
 ENEMY_WALK_SPEED = 0.8            # body heights / second
 ENEMY_AIM_OFFSET = 0.15           # aim strikes this many torso units in front of the target's centre
 ENEMY_FIRST_ATTACK_DELAY = 1.0
-ENEMY_IDLE_MIN = 0.25           # pause between attacks (shrinks further as the shadow gets hurt)
-ENEMY_IDLE_MAX = 0.7
 ENEMY_APPROACH_TIMEOUT = 2.5
 ENEMY_COMBO_CHANCE = 0.5          # chance a jab is followed straight away by a cross
 ENEMY_STUN_TIME = 0.55
 ENEMY_STUN_IMMUNITY = 0.6         # after a stun, hits still hurt but don't re-stun
 ENEMY_KNOCKBACK = 0.9             # body heights / second
-ENEMY_KICK_BLOCK_CHANCE = 0.3     # chance the shadow blocks a kick while it isn't attacking or stunned
 ENEMY_KICK_BLOCK_DAMAGE = 0.25    # fraction of kick damage that gets through a block
 ENEMY_FALL_TIME = 0.4             # knockdown: falling...
 ENEMY_DOWN_TIME = 1.2             # ...lying on the ground (can't be hit)...
 ENEMY_GETUP_TIME = 0.6            # ...and getting back up
 ENEMY_KNOCKDOWN_KNOCKBACK = 1.4   # body heights / second
+ENEMY_DODGE_TIME = 0.35           # how long a dodge lasts (can't be hit meanwhile)
+ENEMY_DODGE_SPEED = 2.2           # body heights / second, backward
+ENEMY_DODGE_COOLDOWN = 1.0        # minimum time between dodges
 ENEMY_POSE_BLEND = 16.0
-ENEMY_ATTACK_SPEED = 1.0          # > 1 = faster attacks (harder)
-ENEMY_ATTACK_WEIGHTS = {
-    "jab": 3.0,
-    "cross": 2.0,
-    "uppercut": 1.5,
-    "high_kick": 1.5,
-    "low_sweep": 2.0,
-}
+
+# --- Bosses (fought in order) -------------------------------------------------
+# dodge_chance / kick_block_chance only apply while the boss is idle or walking,
+# never mid-attack, stunned or knocked down.
+BOSSES = [
+    {
+        "name": "SHADOW",
+        "max_hp": 200,
+        "dodge_chance": 0.10,
+        "kick_block_chance": 0.30,
+        "attack_speed": 1.0,      # > 1 = faster attacks
+        "idle_min": 0.25,         # pause between attacks (shrinks further as the boss gets hurt)
+        "idle_max": 0.7,
+        "attack_weights": {"jab": 3.0, "cross": 2.0, "uppercut": 1.5, "high_kick": 1.5, "low_sweep": 2.0},
+        "rim": (95, 65, 150),
+        "headband": None,
+    },
+    {
+        "name": "SHADOW NINJA",
+        "max_hp": 300,
+        "dodge_chance": 0.35,
+        "kick_block_chance": 0.35,
+        "attack_speed": 1.1,
+        "idle_min": 0.25,
+        "idle_max": 0.6,
+        "attack_weights": {"jab": 2.0, "cross": 2.0, "uppercut": 1.5, "high_kick": 1.5, "low_sweep": 1.5,
+                           "throwing_star": 3.0},
+        "rim": (170, 40, 55),
+        "headband": (200, 30, 40),
+    },
+]
+
+# --- Throwing stars -----------------------------------------------------------
+STAR_SPEED = 1.25                 # body heights / second
+STAR_RADIUS = 0.035               # fraction of the boss's height
+STAR_DAMAGE = 12
+STAR_THROW_DISTANCE = 0.38        # boss backs off to this fraction of the screen width to throw
+
+# --- Flow ---------------------------------------------------------------------
+COUNTDOWN_SECONDS = 3
+NEXT_BOSS_DELAY = 3.5             # seconds of celebration before the next boss's countdown
 
 # --- Colours -----------------------------------------------------------------
 ENEMY_BODY = (8, 6, 12)
 ENEMY_BACK = (30, 26, 40)
-ENEMY_RIM = (95, 65, 150)
 ENEMY_FLASH = (235, 235, 245)
 ENEMY_EYES = (230, 235, 255)
 ENEMY_EYES_ANGRY = (255, 70, 40)
