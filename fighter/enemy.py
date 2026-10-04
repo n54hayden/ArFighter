@@ -287,6 +287,7 @@ class ShadowEnemy:
         self.block_t = 0.0
         self.dodge_t = 0.0
         self.dodge_cooldown = 0.0
+        self.sweep_cooldown = 0.0     # after a leg-sweep knockdown he checks leg kicks until this runs out
         self.rolling = False
         self.spin = 0.0          # roll rotation (degrees, backward)
         self.flip_t = 0.0
@@ -592,25 +593,35 @@ class ShadowEnemy:
             return 1.0
         return max(0.0, min(1.0, 1.0 - (self.death_t - C.ENEMY_DEATH_FADE_START) / C.ENEMY_DEATH_FADE_TIME))
 
-    def take_kick(self, damage: float, part: str = "torso") -> str:
-        """Returns 'ko', 'knockdown', 'knockback', 'blocked' or 'none'.
+    @property
+    def sweep_ready(self) -> bool:
+        """A leg kick would knock him down right now (he isn't still wary from the last one)."""
+        return self.sweep_cooldown <= 0
 
-        An unblocked kick to the head or feet knocks the boss down; one to the body
-        only knocks it back.
+    def take_kick(self, damage: float, part: str = "torso") -> str:
+        """Returns 'ko', 'knockdown', 'knockback', 'blocked', 'checked' or 'none'.
+
+        A kick to the feet (leg sweep) always knocks the boss down, then he checks leg kicks
+        ('checked': chip damage only) for LEG_SWEEP_COOLDOWN. An unblocked head kick knocks him
+        down too; one to the body only knocks him back.
         """
         if not self.can_be_hit:
             return "none"
-        blocked = (self.state in (EnemyState.IDLE, EnemyState.APPROACH)
-                   and random.random() < self.boss["kick_block_chance"])
+        sweep = part == "feet"
+        checked = sweep and not self.sweep_ready
+        blocked = checked or (not sweep and self.state in (EnemyState.IDLE, EnemyState.APPROACH)
+                              and random.random() < self.boss["kick_block_chance"])
         self.hp = max(0.0, self.hp - (damage * C.ENEMY_KICK_BLOCK_DAMAGE if blocked else damage))
         self.flash_t = 0.1
         if self.hp <= 0:
             self._die()
             return "ko"
         if blocked:
-            self.block_t = 0.35
+            self.block_t = 0.35  # knee up: checks the kick
             self.x -= self.facing * 0.03 * self.H
-            return "blocked"
+            return "checked" if checked else "blocked"
+        if sweep:
+            self.sweep_cooldown = C.LEG_SWEEP_COOLDOWN
         if part == "torso":
             self.state = EnemyState.STUNNED
             self.attack = None
@@ -764,6 +775,7 @@ class ShadowEnemy:
         self.stun_immunity = max(0.0, self.stun_immunity - dt)
         self.block_t = max(0.0, self.block_t - dt)
         self.dodge_cooldown = max(0.0, self.dodge_cooldown - dt)
+        self.sweep_cooldown = max(0.0, self.sweep_cooldown - dt)
 
         paused = not (player.calibrated and player.tracked)
         target: Optional[Pose] = None

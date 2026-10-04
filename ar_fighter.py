@@ -761,7 +761,8 @@ class Game:
                     return
                 continue
 
-            if enemy.try_dodge():
+            sure_sweep = kick and part == "feet" and enemy.sweep_ready  # a leg sweep always connects
+            if not sure_sweep and enemy.try_dodge():
                 cooldowns[side] = C.KICK_COOLDOWN if kick else C.PUNCH_COOLDOWN
                 self.effects.text("ROLLED AWAY" if enemy.rolling else "DODGED", (ec[0], ec[1] - enemy.H * 0.4),
                                   (200, 200, 255), 44)
@@ -779,10 +780,11 @@ class Game:
                 if self.stats.limb_landed(kind, side):
                     self._combo_hit(pos)
 
-            if result == "blocked":
+            if result in ("blocked", "checked"):
                 dealt = round(damage * C.ENEMY_KICK_BLOCK_DAMAGE)
+                label = "CHECKED!" if result == "checked" else "BLOCKED"  # checked: sweep still recharging
                 self.effects.burst(pos, (200, 150, 255), 16, 360)
-                self.effects.text(f"BLOCKED -{dealt}", (pos[0], pos[1] - 40), (200, 160, 255), 40)
+                self.effects.text(f"{label} -{dealt}", (pos[0], pos[1] - 40), (200, 160, 255), 40)
                 self.effects.shake(5)
                 self.sfx.kick(0.5)
             else:
@@ -1347,6 +1349,11 @@ class Game:
                    A.LIME if in_range else A.ORANGE)
             if self.player.is_jumping:
                 A.text(self.screen, "AIRBORNE!", (36, 116), self.font_tiny, A.CYAN)
+            if self.enemy.sweep_ready:  # leg sweep: always knocks him down, then recharges
+                A.text(self.screen, "LEG SWEEP READY", (36, 136), self.font_tiny, A.YELLOW)
+            else:
+                A.text(self.screen, f"LEG SWEEP {math.ceil(self.enemy.sweep_cooldown)}", (36, 136), self.font_tiny,
+                       A.DIM)
 
         if self.debug:  # tech readout only in debug mode
             stats = (f"FPS {self.pacer.fps:4.0f}   CAM {self.camera.camera_fps:4.1f}   POSE {self.pose_ms:4.1f} ms   "

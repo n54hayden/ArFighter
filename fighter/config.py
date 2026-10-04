@@ -81,6 +81,7 @@ KICK_COOLDOWN = 0.5
 KICK_DAMAGE_MIN = 8
 KICK_DAMAGE_MAX = 16
 LOW_KICK_SPEED_FACTOR = 1.3       # kicks to the boss's feet need this much more speed (so steps don't count)
+LEG_SWEEP_COOLDOWN = 6.0          # a leg kick always knocks the boss down, then he checks leg kicks this long
 THROW_RELEASE_FACTOR = 0.6        # stats: a punch/kick ends once the limb slows below this x its threshold
 KICK_THROW_MIN_LIFT = 0.5         # stats: a missed kick only counts as thrown if the foot rose this many
                                   # torso units above the other foot (so fast steps aren't kicks)
