@@ -12,7 +12,8 @@ FPS = 60
 WINDOW_TITLE = "AR Shadow Fighter"
 
 # --- Music -------------------------------------------------------------------
-MUSIC_DIR = "music"               # relative to ar_fighter.py; first .mp3/.ogg/.wav is played
+MUSIC_DIR = "music"               # relative to ar_fighter.py; first .mp3/.ogg/.wav is the fight music
+MENU_MUSIC_DIR = "music/menu"     # first audio file here plays on the main menu
 MUSIC_VOLUME = 0.6                # 0.0 - 1.0
 MUSIC_FADE_IN_MS = 500
 MUSIC_FADE_OUT_MS = 1200
@@ -21,8 +22,9 @@ MUSIC_FADE_OUT_MS = 1200
 SFX_DIR = "sound_effects"         # relative to ar_fighter.py
 SFX_VOLUME = 0.9                  # 0.0 - 1.0
 SFX_KEYWORDS = {                  # a file is used for a role if its name contains any keyword
-    "bell": ("bell",),
+    "bell": ("bell",),               # (roles are matched in this order and a file only fills one role)
     "punch": ("punch", "impact", "hit"),
+    "groan": ("disappoint", "groan", "boo", "aww"),  # defeat; before "cheer" so a "crowd ..." groan isn't the cheer
     "cheer": ("cheer", "crowd", "applause"),
     "throw": ("throw", "whoosh", "swish"),
 }

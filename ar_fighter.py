@@ -113,7 +113,7 @@ class Game:
         here = Path(__file__).resolve().parent
         self.save_path = here / C.SAVE_FILE
         self.checkpoint = self._load_checkpoint()  # furthest boss reached by beating the one before
-        self.music = Music(here / C.MUSIC_DIR)
+        self.music = Music({"fight": here / C.MUSIC_DIR, "menu": here / C.MENU_MUSIC_DIR})
         self.sfx = SoundEffects(here / C.SFX_DIR)
 
         self.mode = MODE_MENU
@@ -137,6 +137,7 @@ class Game:
         self.menu_rects = []
         self.trail_player = float(C.PLAYER_MAX_HP)
         self.trail_enemy = self.enemy.max_hp
+        self.music.play("menu")
 
     # --- main loop -----------------------------------------------------------
     def run(self) -> None:
@@ -262,6 +263,10 @@ class Game:
             self._open_menu()
 
     def _show_summary(self) -> None:
+        if self.result == "DEFEAT":
+            self.sfx.groan_crowd()
+        else:
+            self.sfx.cheer_crowd()
         self.mode = MODE_SUMMARY
         self.summary_t = 0.0
         self.menu_index = 0
@@ -308,6 +313,7 @@ class Game:
         self.menu_index = 0
         self.menu_page = "main"
         self.menu_rects = []
+        self.music.play("menu")
 
     def _start_countdown(self) -> None:
         """Gives the player a few seconds to get into position before calibrating or fighting."""
@@ -419,8 +425,6 @@ class Game:
         self.result = result
         self.music.set_paused(False)  # a paused track can't fade out
         self.music.fade_out()
-        if result != "DEFEAT":
-            self.sfx.cheer_crowd()
         self.over_timer = 0.0
 
     # --- Mage spells -----------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Sound effects: fight bell, punch impacts, star throws and victory cheer.
+"""Sound effects: fight bell, punch impacts, star throws, victory cheer and defeat groan.
 
 Files are found by keyword in their names (see SFX_KEYWORDS in config), so they can
 be renamed or replaced freely. A file holding several punches back to back is split
@@ -94,6 +94,7 @@ class SoundEffects:
         self.muted = False
         self.bell: Optional[pygame.mixer.Sound] = None
         self.cheer: Optional[pygame.mixer.Sound] = None
+        self.groan: Optional[pygame.mixer.Sound] = None
         self.punches: List[pygame.mixer.Sound] = []
         self.throws: List[pygame.mixer.Sound] = []
         self._last: Dict[str, int] = {}
@@ -109,7 +110,8 @@ class SoundEffects:
             rate = pygame.mixer.get_init()[0]
             found: Dict[str, Path] = {}
             for role, keywords in C.SFX_KEYWORDS.items():
-                found_path = next((p for p in files if any(k in p.name.lower() for k in keywords)), None)
+                found_path = next((p for p in files if p not in found.values()
+                                   and any(k in p.name.lower() for k in keywords)), None)
                 if found_path is None:
                     print(f"[sfx] no {role} sound found (looked for {', '.join(keywords)} in the file name)")
                 else:
@@ -118,6 +120,8 @@ class SoundEffects:
                 self.bell = trim_leading_silence(pygame.mixer.Sound(str(found["bell"])), rate)
             if "cheer" in found:
                 self.cheer = trim_leading_silence(pygame.mixer.Sound(str(found["cheer"])), rate)
+            if "groan" in found:
+                self.groan = trim_leading_silence(pygame.mixer.Sound(str(found["groan"])), rate)
             if "punch" in found:
                 self.punches = split_hits(pygame.mixer.Sound(str(found["punch"])), rate)
             if "throw" in found:
@@ -153,6 +157,9 @@ class SoundEffects:
 
     def cheer_crowd(self) -> None:
         self._play(self.cheer, 1.0)
+
+    def groan_crowd(self) -> None:
+        self._play(self.groan, 1.0)
 
     def stop(self) -> None:
         if self.available:

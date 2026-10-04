@@ -1,8 +1,8 @@
-"""Fight music: plays the first audio file found in the music folder."""
+"""Music: a menu track and a fight track, each the first audio file found in its folder."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 import pygame
 
@@ -12,34 +12,55 @@ AUDIO_EXTENSIONS = (".mp3", ".ogg", ".wav")
 
 
 class Music:
-    def __init__(self, folder: Path):
-        self.track: Optional[Path] = None
+    def __init__(self, folders: Dict[str, Path]):
+        """folders: track name ('fight', 'menu', ...) -> folder holding that track. Subfolders are not searched."""
+        self.tracks: Dict[str, Path] = {}
         self.available = False
         self.muted = False
         self._paused = False
         self._playing = False
+        self._current: Optional[str] = None  # name of the track loaded in the mixer
 
-        tracks = sorted(p for p in folder.glob("*") if p.suffix.lower() in AUDIO_EXTENSIONS) if folder.is_dir() else []
-        if not tracks:
-            print(f"[music] no audio file in {folder}, playing without music")
+        for name, folder in folders.items():
+            files = sorted(p for p in folder.glob("*") if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS) \
+                if folder.is_dir() else []
+            if not files:
+                print(f"[music] no audio file in {folder}, no {name} music")
+                continue
+            try:
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init()
+                pygame.mixer.music.load(str(files[0]))  # check it loads; play() reloads it when needed
+                self.tracks[name] = files[0]
+                self.available = True
+            except pygame.error as exc:  # no audio device, unsupported file, ...
+                print(f"[music] could not load {files[0].name}: {exc}")
+        self._current = None
+
+    def play(self, name: str) -> None:
+        """Loop the named track from the beginning. If it's already playing, leave it alone."""
+        track = self.tracks.get(name)
+        if track is None:
+            self.stop()
             return
-        self.track = tracks[0]
+        if self._current == name and self._playing:
+            self.set_paused(False)
+            return
         try:
-            if not pygame.mixer.get_init():
-                pygame.mixer.init()
-            pygame.mixer.music.load(str(self.track))
-            pygame.mixer.music.set_volume(C.MUSIC_VOLUME)
-            self.available = True
-        except pygame.error as exc:  # no audio device, unsupported file, ...
-            print(f"[music] could not load {self.track.name}: {exc}")
-
-    def start(self) -> None:
-        """Play from the beginning, looping until stopped."""
-        if not self.available:
+            if self._current != name:
+                pygame.mixer.music.load(str(track))
+                self._current = name
+            pygame.mixer.music.set_volume(0.0 if self.muted else C.MUSIC_VOLUME)
+            pygame.mixer.music.play(loops=-1, fade_ms=C.MUSIC_FADE_IN_MS)
+        except pygame.error as exc:
+            print(f"[music] could not play {track.name}: {exc}")
             return
-        pygame.mixer.music.play(loops=-1, fade_ms=C.MUSIC_FADE_IN_MS)
         self._paused = False
         self._playing = True
+
+    def start(self) -> None:
+        """Fight music."""
+        self.play("fight")
 
     def fade_out(self) -> None:
         if self.available and self._playing:
