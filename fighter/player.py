@@ -58,6 +58,7 @@ class PlayerTracker:
         self.pts: Dict[str, Vec] = {}             # smoothed screen-space landmarks
         self.fist_vel: Dict[str, Vec] = {s: (0.0, 0.0) for s in SIDES}
         self.foot_vel: Dict[str, Vec] = {s: (0.0, 0.0) for s in SIDES}
+        self.body_vel: Dict[str, Vec] = {"shoulders": (0.0, 0.0), "hips": (0.0, 0.0)}  # whole-body motion
         self._prev_limb_raw: Dict[tuple, Vec] = {}
         self._prev_capture_t: Optional[float] = None
         self.last_seen = -1e9
@@ -138,6 +139,12 @@ class PlayerTracker:
                     self._prev_limb_raw.pop((kind, side), None)
                 else:
                     self._prev_limb_raw[(kind, side)] = p
+        for part, p in (("shoulders", _mid(raw["l_shoulder"], raw["r_shoulder"])),
+                        ("hips", _mid(raw["l_hip"], raw["r_hip"]))):
+            prev = self._prev_limb_raw.get((part, ""))
+            ok = prev is not None and 0.0 < dt_cap < 0.25
+            self.body_vel[part] = ((p[0] - prev[0]) / dt_cap, (p[1] - prev[1]) / dt_cap) if ok else (0.0, 0.0)
+            self._prev_limb_raw[(part, "")] = p
 
         if self.calibrated:
             self._update_jump(raw, dt_cap, now)
@@ -283,6 +290,13 @@ class PlayerTracker:
     def fist_speed(self, side: str) -> float:
         vx, vy = self.fist_vel[side]
         return math.hypot(vx, vy) / max(self.unit, 1.0)
+
+    def limb_speed_vs_body(self, kind: str, side: str) -> float:
+        """Fist speed relative to the shoulders ('punch') or foot speed relative to the hips ('kick'),
+        in torso units / second: the arm or leg itself moving, not the whole body ducking or lunging."""
+        (vx, vy), (bx, by) = ((self.fist_vel[side], self.body_vel["shoulders"]) if kind == "punch"
+                              else (self.foot_vel[side], self.body_vel["hips"]))
+        return math.hypot(vx - bx, vy - by) / max(self.unit, 1.0)
 
     def shoulder_mid(self) -> Vec:
         return _mid(self.pts["l_shoulder"], self.pts["r_shoulder"])

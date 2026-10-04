@@ -268,6 +268,7 @@ class ShadowEnemy:
         self.phase_progress = 0.0
         self.phase_from: Pose = dict(GUARD)
         self.attack_resolved = False
+        self.attack_seq = 0           # increments every time an attack starts (lets the game tell attacks apart)
         self._strike_prev: Optional[Vec] = None
         self._strike_cur: Optional[Vec] = None
         self._was_live = False
@@ -545,6 +546,11 @@ class ShadowEnemy:
         ph = self.phase
         return ph is not None and ph.active and self.phase_progress >= ph.active_from
 
+    @property
+    def strike_window_open(self) -> bool:
+        """The current attack's hitbox is live this frame (whether or not it has already connected)."""
+        return self._strike_live()
+
     # --- combat events -------------------------------------------------------
     def take_hit(self, damage: float) -> str:
         """Returns 'ko', 'stun' or 'armor' (damaged but not stunned)."""
@@ -674,6 +680,7 @@ class ShadowEnemy:
             })
         self.state = EnemyState.ATTACK
         self.attack = spec
+        self.attack_seq += 1
         self.phase_i = 0
         self.phase_t = 0.0
         self.phase_progress = 0.0

@@ -29,6 +29,7 @@ class GroundStrike:
         self.t = 0.0
         self.landed = False
         self.after = 0.0            # time since impact (scorch / shards fade out)
+        self.attack_id, self.attack_part = None, 0  # fight stats: which spell cast this belongs to
 
     @property
     def progress(self) -> float:
@@ -164,6 +165,7 @@ class FireWall:
         self.resolved = False       # hit or dodged (each wall affects the player once)
         self.window_open = False    # wall has reached the player's body
         self.evaded = False         # player was airborne / ducked at some point in the window
+        self.attack_id, self.attack_part = None, 0  # fight stats: which spell cast this belongs to
 
     @property
     def launched(self) -> bool:

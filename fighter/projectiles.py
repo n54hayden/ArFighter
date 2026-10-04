@@ -19,6 +19,7 @@ class ThrowingStar:
         self.angle = 0.0
         self.trail: List[Vec] = []
         self.passed_player = False  # set once it has flown past the player unharmed
+        self.attack_id = None       # fight stats: one throw = one enemy attack
 
     @property
     def collider(self) -> Circle:

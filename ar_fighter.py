@@ -4,12 +4,13 @@
 Run:   python ar_fighter.py [--camera 0] [--complexity 1] [--debug]
 
 Flow: menu -> 3 s countdown to get into position -> calibration -> bosses 1-5 in order
-(or pick any boss from Select Boss; beating one moves on to the next).
+(or pick any boss from Select Boss). After each fight a Fight Summary shows your stats,
+with Next Boss / Fight Again / Select Boss / Main Menu options.
 
 Controls:
-    Enter  start (menu) / fight again (after a fight)
+    Enter  start (menu) / choose an option (Fight Summary)
     D      toggle hitbox / skeleton debug overlay
-    R      restart the current fight
+    R      restart the current fight (also Fight Again from the summary)
     C      recalibrate (stand ~6 ft / 2 m back, full body in view)
     F      toggle fullscreen
     M      mute / unmute music and sound effects
@@ -39,13 +40,14 @@ from fighter.camera import CameraThread
 from fighter.effects import Effects
 from fighter.enemy import EnemyState, ShadowEnemy
 from fighter.geometry import intersects
-from fighter.player import PlayerTracker
+from fighter.player import SIDES, PlayerTracker
 from fighter.projectiles import ThrowingStar
 from fighter.spells import FireWall, GroundStrike, capsule_hits_rect, circle_hits_rect, make_fire_wall, \
     make_icicles, make_meteor
+from fighter.stats import FightStats, format_duration
 
 MODE_MENU, MODE_COUNTDOWN, MODE_CALIBRATE = "menu", "countdown", "calibrate"
-MODE_FIGHT, MODE_OVER = "fight", "over"
+MODE_FIGHT, MODE_OVER, MODE_SUMMARY = "fight", "over", "summary"
 
 
 class FramePacer:
@@ -100,6 +102,7 @@ class Game:
         self.font_big = pygame.font.Font(None, 96)
         self.font_menu = pygame.font.Font(None, 44)
         self.font_huge = pygame.font.Font(None, 150)
+        self.font_stat = pygame.font.Font(None, 76)
 
         self.camera = CameraThread(self.size, camera_index, complexity)
         self.camera.start()
@@ -126,6 +129,9 @@ class Game:
         self.result = ""
         self.stars = []
         self.hazards = []  # Mage spells: GroundStrike / FireWall
+        self.stats = FightStats()     # replaced with a fresh one at the start of every fight
+        self._melee = None            # (enemy.attack_seq, stats id) of the melee strike being tracked
+        self.summary_t = 0.0
         self.menu_index = 0
         self.menu_page = "main"
         self.menu_rects = []
@@ -152,14 +158,16 @@ class Game:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
-            elif self.mode == MODE_MENU and event.type == pygame.MOUSEMOTION:
+            elif self.mode in (MODE_MENU, MODE_SUMMARY) and event.type == pygame.MOUSEMOTION:
                 for i, rect in enumerate(self.menu_rects):
                     if rect.collidepoint(event.pos):
                         self.menu_index = i
-            elif self.mode == MODE_MENU and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            elif self.mode in (MODE_MENU, MODE_SUMMARY) and event.type == pygame.MOUSEBUTTONDOWN \
+                    and event.button == 1:
                 for i, rect in enumerate(self.menu_rects):
                     if rect.collidepoint(event.pos):
-                        self._menu_select(i)
+                        (self._menu_select if self.mode == MODE_MENU else self._summary_select)(i)
+                        break
             elif event.type == pygame.KEYDOWN:
                 self._handle_key(event.key)
 
@@ -184,16 +192,21 @@ class Game:
                 self.menu_index = (self.menu_index + 1) % len(self._menu_items())
             elif key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
                 self._menu_select(self.menu_index)
+        elif self.mode == MODE_SUMMARY and key in (pygame.K_LEFT, pygame.K_UP, pygame.K_RIGHT, pygame.K_DOWN,
+                                                   pygame.K_TAB):
+            step = -1 if key in (pygame.K_LEFT, pygame.K_UP) else 1
+            self.menu_index = (self.menu_index + step) % len(self._summary_items())
+        elif self.mode == MODE_SUMMARY and key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+            self._summary_select(self.menu_index)
         elif key == pygame.K_ESCAPE:
             self._open_menu()
         elif key == pygame.K_c:
             self.player.reset_calibration()
             self._start_countdown()
-        elif key == pygame.K_r or (key in (pygame.K_RETURN, pygame.K_KP_ENTER) and self.mode == MODE_OVER):
-            if self.mode in (MODE_FIGHT, MODE_OVER):
-                if self.result == "CHAMPION" and self.mode == MODE_OVER:
-                    self.boss_index = 0  # beat everyone: start over from the first boss
-                self._start_countdown()
+        elif key == pygame.K_r and self.mode in (MODE_FIGHT, MODE_OVER, MODE_SUMMARY):
+            self._start_countdown()  # same boss again
+        elif key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE) and self.mode == MODE_OVER:
+            self._show_summary()     # skip the result banner
 
     def _menu_items(self):
         """(label, action) pairs for the current menu page.
@@ -227,6 +240,32 @@ class Game:
                 self.boss_index = self.checkpoint if action == "continue" else 0
             self.menu_page = "main"
             self._start_countdown()
+
+    def _summary_items(self):
+        """(label, action) pairs for the buttons under the Fight Summary."""
+        items = []
+        if self.result == "VICTORY":
+            items.append((f"Next: {C.BOSSES[self.boss_index + 1]['name'].title()}", "next"))
+        return items + [("Fight Again", "again"), ("Select Boss", "select"), ("Main Menu", "menu")]
+
+    def _summary_select(self, index: int) -> None:
+        action = self._summary_items()[index][1]
+        if action == "next":
+            self.boss_index += 1
+            self._start_countdown()
+        elif action == "again":
+            self._start_countdown()
+        elif action == "select":
+            self._open_menu()
+            self.menu_page, self.menu_index = "bosses", self.boss_index
+        else:
+            self._open_menu()
+
+    def _show_summary(self) -> None:
+        self.mode = MODE_SUMMARY
+        self.summary_t = 0.0
+        self.menu_index = 0
+        self.menu_rects = []
 
     def _load_checkpoint(self) -> int:
         try:
@@ -268,6 +307,7 @@ class Game:
         self.mode = MODE_MENU
         self.menu_index = 0
         self.menu_page = "main"
+        self.menu_rects = []
 
     def _start_countdown(self) -> None:
         """Gives the player a few seconds to get into position before calibrating or fighting."""
@@ -288,7 +328,7 @@ class Game:
         self.enemy.facing = 1 if com > spawn_x else -1
         self.enemy_ready = True
 
-    def _begin_fight(self) -> None:
+    def _begin_fight(self, now: float) -> None:
         p = self.player
         p.reset_fight()
         if not self.enemy_ready:
@@ -299,6 +339,8 @@ class Game:
         self.hazards.clear()
         self.trail_player = float(C.PLAYER_MAX_HP)
         self.trail_enemy = self.enemy.max_hp
+        self.stats = FightStats(self.boss["name"], now)  # never carried over between fights
+        self._melee = None
         self.mode = MODE_FIGHT
         self.sfx.stop()  # cut off a victory cheer still playing from the last fight
         self.sfx.bell_ring()
@@ -317,20 +359,23 @@ class Game:
         self.trail_player += (self.player.hp - self.trail_player) * min(1.0, dt * 3)
         self.trail_enemy += (self.enemy.hp - self.trail_enemy) * min(1.0, dt * 3)
 
+        if self.mode == MODE_SUMMARY:  # the arena stays frozen behind the summary
+            self.summary_t += dt
+            return
         if self.mode == MODE_MENU:
             return
         if self.mode == MODE_COUNTDOWN:
             self.countdown_t -= dt
             if self.countdown_t <= 0:
                 if self.player.calibrated:
-                    self._begin_fight()
+                    self._begin_fight(now)
                 else:
                     self.mode = MODE_CALIBRATE
                     self.player.calibration_enabled = True
             return
         if self.mode == MODE_CALIBRATE:
             if self.player.calibrated:
-                self._begin_fight()
+                self._begin_fight(now)
             return
 
         self.enemy.hazards_active = bool(self.hazards)  # one spell at a time: never overlapping hazards
@@ -351,20 +396,22 @@ class Game:
         self._update_hazards(dt)
         if self.mode == MODE_FIGHT:
             self.music.set_paused(not self.player.tracked)
+            self._track_enemy_melee()
             if self.player.tracked:
+                self._track_player_throws()
                 self._resolve_player_attacks()
                 self._resolve_enemy_strike()
             if self.enemy.state is EnemyState.DEAD:
-                self._end("VICTORY" if self.boss_index + 1 < len(C.BOSSES) else "CHAMPION")
+                self._end("VICTORY" if self.boss_index + 1 < len(C.BOSSES) else "CHAMPION", now)
             elif self.player.hp <= 0:
-                self._end("DEFEAT")
+                self._end("DEFEAT", now)
         elif self.mode == MODE_OVER:
             self.over_timer += dt
-            if self.result == "VICTORY" and self.over_timer >= C.NEXT_BOSS_DELAY:
-                self.boss_index += 1
-                self._start_countdown()
+            if self.over_timer >= C.SUMMARY_DELAY:
+                self._show_summary()
 
-    def _end(self, result: str) -> None:
+    def _end(self, result: str, now: float) -> None:
+        self.stats.finish(now, result, self.player.hp)
         if result == "VICTORY" and self.boss_index + 1 > self.checkpoint:
             self.checkpoint = self.boss_index + 1  # the next boss is now unlocked from the menu
             self._save_checkpoint()
@@ -381,12 +428,16 @@ class Game:
         """Turn a cast (with the player's position captured at cast time) into locked hazards."""
         spell, w = cast["spell"], self.size[0]
         if spell == "meteor":
-            self.hazards += make_meteor(cast)
+            new = make_meteor(cast)
         elif spell == "icicle_rain":
-            self.hazards += make_icicles(cast, w)
+            new = make_icicles(cast, w)
         else:
             kind = "low" if spell == "fire_wall_low" else "high"
-            self.hazards.append(make_fire_wall(kind, cast, cast["origin_x"], cast["ground_y"], self.enemy.H, w))
+            new = [make_fire_wall(kind, cast, cast["origin_x"], cast["ground_y"], self.enemy.H, w)]
+        attack_id = self.stats.open_attack(len(new))  # the whole cast is one attack, each hazard one part
+        for i, hz in enumerate(new):
+            hz.attack_id, hz.attack_part = attack_id, i
+        self.hazards += new
         self.sfx.throw(0.6)
 
     def _teleport_effect(self, kind: str, pos) -> None:
@@ -412,7 +463,18 @@ class Game:
                     self._check_fire_wall(hz)
             if not hz.finished:
                 remaining.append(hz)
+            else:
+                if isinstance(hz, FireWall) and not hz.resolved:  # passed while you were out of view
+                    self.stats.void_attack(hz.attack_id)
+                self.stats.close_attack(hz.attack_id, hz.attack_part)
         self.hazards = remaining
+
+    def _hurt_player(self, amount: float) -> float:
+        """Apply damage to the player; returns how much HP was actually lost."""
+        p = self.player
+        dealt = min(max(0.0, amount), p.hp)
+        p.hp -= dealt
+        return dealt
 
     def _ground_impact(self, hz: GroundStrike, live: bool) -> None:
         pos = (hz.x, hz.ground_y)
@@ -428,11 +490,14 @@ class Game:
             self.effects.shake(3)
             self.sfx.punch(0.3)
         p = self.player
-        if live and hz.covers(p.hip_mid()[0], C.PLAYER_HALF_WIDTH * p.unit):  # still standing in the zone
-            p.hp = max(0.0, p.hp - hz.damage)
+        if not live:
+            self.stats.void_attack(hz.attack_id)  # landed while you were out of view: can't judge it
+        elif hz.covers(p.hip_mid()[0], C.PLAYER_HALF_WIDTH * p.unit):  # still standing in the zone
+            self.stats.attack_hit(hz.attack_id, self._hurt_player(hz.damage))
             label = "Meteor!" if hz.kind == "meteor" else "Icicle!"
             self.effects.text(f"{label} -{hz.damage:.0f}", (p.com_x(), hz.ground_y - p.unit * 4), (255, 90, 90), 42)
             self.effects.flash((180, 0, 0), 90)
+        self.stats.close_attack(hz.attack_id, hz.attack_part)
 
     def _check_fire_wall(self, hz: FireWall) -> None:
         """Safe if you're airborne (low wall) or ducked under it (high wall) at any moment between
@@ -457,12 +522,13 @@ class Game:
             if hz.evaded:
                 self.effects.text("JUMPED!" if hz.kind == "low" else "DUCKED!", (px, y), (120, 255, 160), 44)
             else:
-                p.hp = max(0.0, p.hp - C.FIRE_WALL_DAMAGE)
+                self.stats.attack_hit(hz.attack_id, self._hurt_player(C.FIRE_WALL_DAMAGE))
                 self.effects.burst((px, (hz.y_top + hz.y_bottom) / 2), (255, 140, 40), 24, 420)
                 self.effects.text(f"Fire Wall! -{C.FIRE_WALL_DAMAGE}", (px, y), (255, 90, 90), 42)
                 self.effects.flash((200, 60, 0), 90)
                 self.effects.shake(8)
                 self.sfx.punch(0.8)
+            self.stats.close_attack(hz.attack_id, hz.attack_part)
 
     def _update_stars(self, dt: float) -> None:
         """Move throwing stars and hit the player's head/torso. Forearms don't stop them: duck!"""
@@ -470,6 +536,7 @@ class Game:
         for start, aim in enemy.pop_thrown():
             star = ThrowingStar(start, aim, C.STAR_SPEED * enemy.H, C.STAR_RADIUS * enemy.H)
             star.side = 1 if start[0] > player.com_x() else -1  # which side of the player it came from
+            star.attack_id = self.stats.open_attack()
             self.stars.append(star)
             self.sfx.throw()
         live = self.mode == MODE_FIGHT and player.tracked
@@ -477,7 +544,10 @@ class Game:
         for star in self.stars:
             star.update(dt)
             if star.offscreen(*self.size):
+                self.stats.close_attack(star.attack_id)
                 continue
+            if not live and not star.passed_player:
+                self.stats.void_attack(star.attack_id)  # you were out of view while it was in flight
             if live and not star.passed_player:
                 hit = None
                 head, torso = player.head(), player.torso()
@@ -487,7 +557,8 @@ class Game:
                     hit = "torso"
                 if hit:
                     damage = C.STAR_DAMAGE * (C.HEAD_HIT_MULTIPLIER if hit == "head" else 1.0)
-                    player.hp = max(0.0, player.hp - damage)
+                    self.stats.attack_hit(star.attack_id, self._hurt_player(damage))
+                    self.stats.close_attack(star.attack_id)
                     pos = (star.x, star.y)
                     self.effects.burst(pos, (255, 60, 60), 20, 420)
                     self.effects.burst(pos, (220, 220, 235), 10, 300)
@@ -498,9 +569,40 @@ class Game:
                     continue
                 if (star.x - player.com_x()) * star.side < -0.5 * player.unit:
                     star.passed_player = True
+                    self.stats.close_attack(star.attack_id)
                     self.effects.text("DUCKED!", (player.com_x(), star.y - 30), (120, 255, 160), 44)
             remaining.append(star)
         self.stars = remaining
+
+    def _track_player_throws(self) -> None:
+        """Feed each fist/foot's motion to the stats, using the same speed / direction / cooldown
+        rules as _resolve_player_attacks, so one real punch or kick counts as thrown once."""
+        enemy, player = self.enemy, self.player
+        evaluating = enemy.can_be_hit and player.in_range(C.PLAYER_PUNCH_MIN_DEPTH)
+        ec = enemy.center()
+        feet = player.feet()
+        for kind, limbs, vel, speed_of, threshold, cooldowns in (
+                ("punch", player.fists(), player.fist_vel, player.fist_speed, C.PUNCH_SPEED_THRESHOLD,
+                 player.punch_cooldown),
+                ("kick", feet, player.foot_vel, player.foot_speed, C.KICK_SPEED_THRESHOLD, player.kick_cooldown)):
+            for side in SIDES:
+                limb = limbs.get(side)
+                if limb is None:
+                    self.stats.update_limb(kind, side, False, False)
+                    continue
+                vx, vy = vel[side]
+                speed = speed_of(side)
+                toward = vx * (ec[0] - limb.center[0]) + vy * (ec[1] - limb.center[1]) > 0
+                striking = evaluating and toward and speed >= threshold and cooldowns[side] <= 0
+                sustained = toward and speed >= threshold * C.THROW_RELEASE_FACTOR
+                # Ducking, jumping or lunging moves the hands and feet fast too; a miss only counts as
+                # thrown if the arm/leg itself moved fast. (A strike that lands always counts.)
+                qualifies = player.limb_speed_vs_body(kind, side) >= threshold
+                if kind == "kick" and qualifies:  # a fast step isn't a kick: the foot has to come up
+                    other = feet.get("r" if side == "l" else "l")
+                    qualifies = other is not None and \
+                        other.center[1] - limb.center[1] >= C.KICK_THROW_MIN_LIFT * player.unit
+                self.stats.update_limb(kind, side, striking, sustained, qualifies)
 
     def _resolve_player_attacks(self) -> None:
         """Punches (fast fists) and kicks (fast feet) that reach the shadow's body or head."""
@@ -545,7 +647,12 @@ class Game:
             lo, hi = (C.KICK_DAMAGE_MIN, C.KICK_DAMAGE_MAX) if kick else (C.PUNCH_DAMAGE_MIN, C.PUNCH_DAMAGE_MAX)
             damage = round(lo + (hi - lo) * power)
             cooldowns[side] = C.KICK_COOLDOWN if kick else C.PUNCH_COOLDOWN
+            hp_before = enemy.hp
             result = enemy.take_kick(damage, part) if kick else enemy.take_hit(damage)
+            dealt = hp_before - enemy.hp
+            if dealt > 0:  # only attacks that actually hurt the boss count as landed
+                self.stats.record_damage_dealt(dealt)
+                self.stats.limb_landed(kind, side)
             pos = limb.center
 
             if result == "blocked":
@@ -610,6 +717,20 @@ class Game:
             return "torso"
         return None
 
+    def _track_enemy_melee(self) -> None:
+        """One stats entry per melee strike (fist, foot, staff, sword...): opened when its hitbox goes
+        live, closed when that window ends. Hit / block are reported by _resolve_enemy_strike; if
+        neither happened by the close it was dodged (jumped, ducked, stepped away or out of range)."""
+        e, stats = self.enemy, self.stats
+        live = e.state is EnemyState.ATTACK and e.attack is not None and e.strike_window_open
+        if self._melee is not None and (not live or self._melee[0] != e.attack_seq):
+            stats.close_attack(self._melee[1])
+            self._melee = None
+        if live and self._melee is None:
+            self._melee = (e.attack_seq, stats.open_attack())
+        if self._melee is not None and not self.player.tracked:
+            stats.void_attack(self._melee[1])
+
     def _resolve_enemy_strike(self) -> None:
         enemy, player = self.enemy, self.player
         strike = enemy.strike_collider()
@@ -620,6 +741,7 @@ class Game:
         if contact is None:
             return
         enemy.attack_resolved = True  # each attack resolves at most once
+        attack_id = self._melee[1] if self._melee is not None else None
         pos = strike.b
 
         if not player.in_range(spec.min_depth):
@@ -630,6 +752,7 @@ class Game:
             self.effects.burst(pos, (180, 180, 200), 10, 200)
             return
         if contact == "shield":
+            self.stats.attack_blocked(attack_id)
             if spec.limb == "sword":  # parry: sword flung back, he staggers wide open
                 enemy.sword_parried()
                 self.effects.burst(pos, (255, 230, 140), 30, 560)
@@ -645,7 +768,7 @@ class Game:
             return
         if contact == "block":
             chip = spec.damage * spec.block_chip
-            player.hp = max(0.0, player.hp - chip)
+            self.stats.attack_blocked(attack_id, self._hurt_player(chip))
             enemy.on_blocked()
             self.effects.burst(pos, (120, 200, 255), 18, 380)
             self.effects.text("BLOCK" if chip < 0.5 else f"BLOCK -{chip:.0f}", (pos[0], pos[1] - 30),
@@ -655,7 +778,7 @@ class Game:
             return
 
         damage = spec.damage * (C.HEAD_HIT_MULTIPLIER if contact == "head" else 1.0)
-        player.hp = max(0.0, player.hp - damage)
+        self.stats.attack_hit(attack_id, self._hurt_player(damage))
         self.effects.burst(pos, (255, 60, 60), 20, 420)
         self.effects.text(f"{spec.label}! -{damage:.0f}", (pos[0], pos[1] - 30), (255, 90, 90), 42)
         self.effects.flash((180, 0, 0), 110)
@@ -670,7 +793,8 @@ class Game:
         else:
             world.fill((12, 10, 18))
 
-        show_enemy = self.mode in (MODE_FIGHT, MODE_OVER) or (self.mode == MODE_COUNTDOWN and self.enemy_ready)
+        show_enemy = self.mode in (MODE_FIGHT, MODE_OVER, MODE_SUMMARY) or \
+            (self.mode == MODE_COUNTDOWN and self.enemy_ready)
         now = time.perf_counter()
         for hz in self.hazards:  # floor warnings / scorch marks go under everyone
             if isinstance(hz, GroundStrike):
@@ -697,6 +821,8 @@ class Game:
         self.effects.draw_overlay(self.screen)
         if self.mode == MODE_MENU:
             self._draw_menu()
+        elif self.mode == MODE_SUMMARY:
+            self._draw_summary()
         else:
             self._draw_hud()
         pygame.display.flip()
@@ -722,10 +848,7 @@ class Game:
         for i, (label, _) in enumerate(items):
             rect = pygame.Rect(0, 0, bw, 52)
             rect.center = (w // 2, int(top) + i * gap)
-            selected = i == self.menu_index
-            pygame.draw.rect(self.screen, (120, 70, 200) if selected else (40, 34, 56), rect, border_radius=12)
-            pygame.draw.rect(self.screen, (220, 200, 255) if selected else (90, 80, 120), rect, 3, border_radius=12)
-            self._text(label, rect.center, self.font_menu, (255, 255, 255), "center")
+            self._button(rect, label, i == self.menu_index)
             self.menu_rects.append(rect)
 
         tips = [
@@ -743,6 +866,100 @@ class Game:
         if self.camera.error:
             self._text(f"Camera error: {self.camera.error}", (w / 2, h - 60), self.font_small, (255, 90, 90),
                        "center")
+
+    def _button(self, rect: pygame.Rect, label: str, selected: bool) -> None:
+        pygame.draw.rect(self.screen, (120, 70, 200) if selected else (40, 34, 56), rect, border_radius=12)
+        pygame.draw.rect(self.screen, (220, 200, 255) if selected else (90, 80, 120), rect, 3, border_radius=12)
+        self._text(label, rect.center, self.font_menu, (255, 255, 255), "center")
+
+    def _draw_summary(self) -> None:
+        """Fight Summary: three panels (offence / defence / performance) whose numbers count up."""
+        w, h = self.size
+        s = self.stats
+        self._dim(205)
+        k = min(1.0, self.summary_t / C.SUMMARY_TALLY_TIME)
+        k = 1.0 - (1.0 - k) ** 3  # ease out: numbers race up, then settle
+
+        def num(v) -> str:
+            return f"{round(v * k):,}"
+
+        def pct(v) -> str:
+            return f"{round(v * k)}%"
+
+        def grade(v):  # green / gold / orange for good / ok / poor percentages
+            return (120, 255, 160) if v >= 70 else (255, 220, 120) if v >= 40 else (255, 150, 90)
+
+        title, color = {"VICTORY": ("VICTORY", (120, 255, 160)), "CHAMPION": ("CHAMPION!", (255, 220, 90))} \
+            .get(s.result, ("DEFEAT", (255, 90, 90)))
+        self._text(title, (w / 2, 58), self.font_big, color, "center")
+        self._text("FIGHT SUMMARY", (w / 2, 112), self.font_menu, (235, 225, 255), "center")
+        who = "BOSS DEFEATED" if s.result in ("VICTORY", "CHAMPION") else "DEFEATED BY"
+        self._text(f"{who}:  {s.boss_name}", (w / 2, 146), self.font, (200, 190, 230), "center")
+
+        pw, gap, top, ph = 380, 22, 172, 408
+        x0 = (w - (3 * pw + 2 * gap)) // 2
+        purple, gold, dim_white = (220, 200, 255), (255, 220, 120), (210, 210, 220)
+
+        def panel(i, heading, heading_color):
+            rect = pygame.Rect(x0 + i * (pw + gap), top, pw, ph)
+            pygame.draw.rect(self.screen, (40, 34, 56), rect, border_radius=12)
+            pygame.draw.rect(self.screen, (90, 80, 120), rect, 3, border_radius=12)
+            self._text(heading, (rect.centerx, rect.top + 30), self.font_menu, heading_color, "center")
+            return rect
+
+        def hero(cx, y, value, label, value_color):
+            self._text(value, (cx, y), self.font_stat, value_color, "center")
+            self._text(label, (cx, y + 40), self.font_small, dim_white, "center")
+
+        def rows(rect, y, items):
+            for label, value, value_color in items:
+                self._text(label, (rect.left + 22, y), self.font, dim_white, "midleft")
+                self._text(value, (rect.right - 22, y), self.font, value_color, "midright")
+                y += 34
+
+        r = panel(0, "OFFENSE", (255, 140, 40))
+        hero(r.left + pw * 0.27, r.top + 100, pct(s.punch_accuracy), "PUNCH ACCURACY", grade(s.punch_accuracy))
+        hero(r.left + pw * 0.73, r.top + 100, pct(s.kick_accuracy), "KICK ACCURACY", grade(s.kick_accuracy))
+        rows(r, r.top + 186, [
+            ("Punches landed", f"{num(s.punches_landed)} / {num(s.punches_thrown)}", purple),
+            ("Kicks landed", f"{num(s.kicks_landed)} / {num(s.kicks_thrown)}", purple),
+            ("Damage dealt", num(s.damage_dealt), purple),
+        ])
+        self._text("TOTAL HITS", (r.left + 22, r.bottom - 52), self.font_menu, gold, "midleft")
+        self._text(num(s.total_hits), (r.right - 22, r.bottom - 52), self.font_stat, gold, "midright")
+
+        r = panel(1, "DEFENSE", (70, 200, 255))
+        hero(r.centerx, r.top + 100, pct(s.dodge_rate), "DODGE RATE", grade(s.dodge_rate))
+        rows(r, r.top + 186, [
+            ("Attacks faced", num(s.enemy_attacks_faced), purple),
+            ("Dodged", num(s.enemy_attacks_dodged), (120, 255, 160)),
+            ("Blocked", num(s.enemy_attacks_blocked), (140, 210, 255)),
+            ("Hit by", num(s.enemy_attacks_hit), (255, 90, 90)),
+            ("Damage taken", num(s.damage_taken), (255, 90, 90)),
+        ])
+
+        r = panel(2, "PERFORMANCE", gold)
+        hero(r.centerx, r.top + 100, format_duration(s.duration() * k), "FIGHT TIME", (255, 255, 255))
+        health = s.health_remaining * 100
+        rows(r, r.top + 186, [
+            ("Health remaining", pct(health), grade(health)),
+            ("Longest dodge streak", num(s.longest_dodge_streak), (120, 255, 160)),
+            ("Est. calories", f"~{num(s.calories())} kcal", purple),
+        ])
+        self._text(f"Calories: rough estimate, assumes {C.CALORIE_WEIGHT_KG:.0f} kg", (r.centerx, r.bottom - 22),
+                   self.font_small, (150, 145, 170), "center")
+
+        self.menu_rects = []
+        items = self._summary_items()
+        bw = [max(200, self.font_menu.size(label)[0] + 50) for label, _ in items]
+        x = (w - (sum(bw) + 18 * (len(items) - 1))) // 2
+        for i, (label, _) in enumerate(items):
+            rect = pygame.Rect(x, top + ph + 26, bw[i], 52)
+            self._button(rect, label, i == self.menu_index)
+            self.menu_rects.append(rect)
+            x += bw[i] + 18
+        self._text("Left/Right + Enter or click    [R] fight again    [C] recalibrate    [Esc] menu",
+                   (w / 2, h - 18), self.font_small, (170, 170, 185), "center")
 
     def _text(self, msg, pos, font=None, color=(255, 255, 255), anchor="topleft") -> None:
         font = font or self.font
@@ -820,12 +1037,11 @@ class Game:
                 self._text(f"Next up: {nxt}", (w / 2, h * 0.5), self.font, anchor="center")
             elif self.result == "CHAMPION":
                 self._text("CHAMPION!", (w / 2, h * 0.4), self.font_big, (255, 220, 90), "center")
-                self._text("You beat every boss.  Enter/R to play again, Esc for the menu", (w / 2, h * 0.5),
-                           self.font, anchor="center")
+                self._text("You beat every boss!", (w / 2, h * 0.5), self.font, anchor="center")
             else:
                 self._text("DEFEAT", (w / 2, h * 0.4), self.font_big, (255, 90, 90), "center")
-                self._text(f"Enter/R to retry {self.enemy.name}, C to recalibrate, Esc for the menu",
-                           (w / 2, h * 0.5), self.font, anchor="center")
+                self._text(f"{self.enemy.name} wins this round", (w / 2, h * 0.5), self.font, anchor="center")
+            self._text("Enter: fight summary", (w / 2, h * 0.56), self.font_small, (200, 200, 210), "center")
 
 
 def main() -> None:

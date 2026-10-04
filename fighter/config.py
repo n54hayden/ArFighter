@@ -66,6 +66,9 @@ KICK_COOLDOWN = 0.5
 KICK_DAMAGE_MIN = 8
 KICK_DAMAGE_MAX = 16
 LOW_KICK_SPEED_FACTOR = 1.3       # kicks to the boss's feet need this much more speed (so steps don't count)
+THROW_RELEASE_FACTOR = 0.6        # stats: a punch/kick ends once the limb slows below this x its threshold
+KICK_THROW_MIN_LIFT = 0.5         # stats: a missed kick only counts as thrown if the foot rose this many
+                                  # torso units above the other foot (so fast steps aren't kicks)
 
 # --- Player defence ----------------------------------------------------------
 PLAYER_MAX_HP = 100
@@ -247,7 +250,12 @@ STAR_THROW_DISTANCE = 0.38        # boss backs off to this fraction of the scree
 
 # --- Flow ---------------------------------------------------------------------
 COUNTDOWN_SECONDS = 3
-NEXT_BOSS_DELAY = 3.5             # seconds of celebration before the next boss's countdown
+SUMMARY_DELAY = 2.2               # seconds of K.O. / result banner before the Fight Summary appears
+SUMMARY_TALLY_TIME = 0.9          # numbers on the Fight Summary count up over this long
+
+# --- Fight Summary calorie estimate (rough: no body weight is measured) -------------
+CALORIE_MET = 6.0                 # metabolic equivalent for active fitness boxing
+CALORIE_WEIGHT_KG = 70.0          # assumed body weight
 SAVE_FILE = "save_data.json"      # remembers the furthest boss you've reached (next to ar_fighter.py)
 
 # --- Colours -----------------------------------------------------------------
