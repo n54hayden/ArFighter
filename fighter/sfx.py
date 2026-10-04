@@ -6,6 +6,7 @@ on its silent gaps into separate hits, and a random one plays each time (same fo
 """
 from __future__ import annotations
 
+import math
 import random
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -88,6 +89,20 @@ def split_hits(sound: pygame.mixer.Sound, rate: int) -> List[pygame.mixer.Sound]
     return hits or [sound]
 
 
+def _pulse_curve(sound: pygame.mixer.Sound, rate: int) -> np.ndarray:
+    """Loudness envelope (one value per WINDOW_S), 0..1, with a quick decay so each beat reads as a pulse."""
+    env, _ = _envelope(_samples(sound), rate)
+    if not len(env) or env.max() <= 0:
+        return np.zeros(0, np.float32)
+    env = env / env.max()
+    out = np.empty_like(env)
+    level, decay = 0.0, 0.9  # per 10 ms window: a beat fades over ~0.2 s
+    for i, v in enumerate(env):
+        level = max(float(v), level * decay)
+        out[i] = level
+    return out
+
+
 class SoundEffects:
     def __init__(self, folder: Path):
         self.available = False
@@ -98,6 +113,10 @@ class SoundEffects:
         self.punches: List[pygame.mixer.Sound] = []
         self.kicks: List[pygame.mixer.Sound] = []
         self.throws: List[pygame.mixer.Sound] = []
+        self.heartbeat: Optional[pygame.mixer.Sound] = None
+        self._hb_pulse: Optional[np.ndarray] = None   # loudness of the heartbeat over time, 0..1
+        self._hb_channel: Optional[pygame.mixer.Channel] = None
+        self._hb_start = 0.0
         self._last: Dict[str, int] = {}
 
         files = sorted(p for p in folder.glob("*") if p.suffix.lower() in AUDIO_EXTENSIONS) if folder.is_dir() else []
@@ -125,6 +144,9 @@ class SoundEffects:
             for role, attr in (("bell", "bell"), ("cheer", "cheer"), ("groan", "groan")):
                 if role in found:
                     setattr(self, attr, trim_leading_silence(pygame.mixer.Sound(str(found[role][0])), rate))
+            if "heartbeat" in found:  # looped as-is (its silences are the gaps between beats)
+                self.heartbeat = pygame.mixer.Sound(str(found["heartbeat"][0]))
+                self._hb_pulse = _pulse_curve(self.heartbeat, rate)
             for role, attr in (("punch", "punches"), ("kick", "kicks"), ("throw", "throws")):
                 setattr(self, attr, [hit for path in found.get(role, [])
                                      for hit in split_hits(pygame.mixer.Sound(str(path)), rate)])
@@ -163,6 +185,31 @@ class SoundEffects:
 
     def throw(self, volume: float = 1.0) -> None:
         self._play_random("throw", self.throws, volume)
+
+    def _heartbeat_playing(self) -> bool:
+        ch = self._hb_channel
+        return ch is not None and ch.get_busy() and ch.get_sound() is self.heartbeat
+
+    def set_heartbeat(self, on: bool, volume: float, now: float) -> None:
+        """Loop the heartbeat while `on` (and not muted); call every frame. Safe if there's no file."""
+        if on and not self.muted and self.available and self.heartbeat is not None:
+            if not self._heartbeat_playing():
+                self._hb_channel = self.heartbeat.play(loops=-1)
+                self._hb_start = now
+            if self._hb_channel is not None:
+                self._hb_channel.set_volume(max(0.0, min(1.0, volume * C.SFX_VOLUME)))
+        elif self._heartbeat_playing():
+            self._hb_channel.stop()
+            self._hb_channel = None
+
+    def heartbeat_pulse(self, now: float) -> float:
+        """0..1, in time with the heartbeat you hear; a steady 'lub-dub' at LOW_HEALTH_BPM when it's silent."""
+        if self._heartbeat_playing() and self._hb_pulse is not None and len(self._hb_pulse):
+            t = (now - self._hb_start) % self.heartbeat.get_length()
+            return float(self._hb_pulse[min(len(self._hb_pulse) - 1, int(t / WINDOW_S))])
+        phase = (now * C.LOW_HEALTH_BPM / 60.0) % 1.0
+        return max(math.exp(-(phase / 0.07) ** 2), 0.7 * math.exp(-((phase - 0.2) / 0.07) ** 2),
+                   math.exp(-((phase - 1.0) / 0.07) ** 2))
 
     def cheer_crowd(self) -> None:
         self._play(self.cheer, 1.0)

@@ -27,10 +27,20 @@ SFX_KEYWORDS = {                  # a file is used for a role if its name contai
     "kick": ("kick",),
     "punch": ("punch", "impact", "hit"),
     "groan": ("disappoint", "groan", "boo", "aww"),  # defeat; before "cheer" so a "crowd ..." groan isn't the cheer
+    "heartbeat": ("heart",),         # loops while you're on low health
     "cheer": ("cheer", "crowd", "applause"),
     "throw": ("throw", "whoosh", "swish"),
 }
 SFX_POOLED_ROLES = ("punch", "kick", "throw")  # these use every matching file, picking one at random
+
+# --- Readability from across the room (players stand ~8 ft back) ---------------------
+POPUP_TEXT_SCALE = 1.6            # floating combat text ("DUCKED!", "-10", "BLOCK" ...) is drawn this much bigger
+POPUP_TEXT_LIFE_SCALE = 1.3       # ...and stays up this much longer
+CUE_TEXT_SIZE = 84                # the boss's warnings ("JUMP!", "DUCK!", "MOVE!")
+
+# --- Low health -----------------------------------------------------------------------
+LOW_HEALTH_FRACTION = 0.25        # at or below this much health: heartbeat + red pulse at the screen edges
+LOW_HEALTH_BPM = 80               # pulse rate used if the heartbeat sound is missing or muted
 
 # --- Camera / pose thread ----------------------------------------------------
 # On this Mac, index 0 is the iPhone (Continuity Camera) when it's nearby and 1 is the

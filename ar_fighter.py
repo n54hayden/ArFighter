@@ -38,7 +38,7 @@ from fighter import config as C
 from fighter.audio import Music
 from fighter.sfx import SoundEffects
 from fighter.camera import CameraThread
-from fighter.effects import Effects
+from fighter.effects import Effects, make_vignette, render_outlined
 from fighter.enemy import EnemyState, ShadowEnemy
 from fighter.geometry import intersects
 from fighter.leaderboard import Leaderboard
@@ -101,6 +101,8 @@ class Game:
         self._veil = pygame.Surface(self.size).convert()  # black, for dimming behind the menu
         self._tint = pygame.Surface(self.size).convert()  # red, for the boss intro's WARNING
         self._tint.fill((150, 0, 0))
+        self._vignette = make_vignette(self.size, (200, 0, 0))  # low-health pulse at the screen edges
+        self.low_health = 0.0         # 0 = fine; >0 = how close to death (0..1) while at or below LOW_HEALTH_FRACTION
         self.pacer = FramePacer(C.FPS)
 
         self.font_small = pygame.font.Font(None, 22)
@@ -444,9 +446,18 @@ class Game:
         self.slowmo_t -= dt
         return 0.0 if elapsed < C.KO_HITSTOP else C.KO_SLOWMO_SCALE
 
+    def _update_low_health(self, now: float) -> None:
+        """Heartbeat + red edge pulse while you're fighting on LOW_HEALTH_FRACTION of your health or less."""
+        limit = C.PLAYER_MAX_HP * C.LOW_HEALTH_FRACTION
+        hp = self.player.hp
+        low = self.mode == MODE_FIGHT and 0 < hp <= limit
+        self.low_health = (0.35 + 0.65 * (1.0 - hp / limit)) if low else 0.0  # stronger the closer to 0
+        self.sfx.set_heartbeat(low, 0.7 + 0.3 * self.low_health, now)
+
     def _update(self, dt: float, now: float) -> None:
         self._now = now
         self.player.update(dt, now)
+        self._update_low_health(now)
         wdt = dt * self._time_scale(dt)  # "world" time: the boss, projectiles, spells and particles
         self.effects.update(wdt)
         self.combo_pop_t += dt
@@ -941,6 +952,10 @@ class Game:
         self.screen.fill((0, 0, 0))
         self.screen.blit(world, self.effects.shake_offset())
         self.effects.draw_overlay(self.screen)
+        if self.low_health > 0:
+            pulse = self.sfx.heartbeat_pulse(now)
+            self._vignette.set_alpha(int(255 * min(1.0, (0.3 + 0.7 * pulse) * self.low_health)))
+            self.screen.blit(self._vignette, (0, 0))
         if self.mode == MODE_MENU:
             self._draw_menu()
         elif self.mode == MODE_SUMMARY:
@@ -1188,11 +1203,8 @@ class Game:
         self._draw_popup()
 
     def _text_scaled(self, msg, center, font, color, scale: float = 1.0, alpha: float = 1.0) -> None:
-        """Centred text with a drop shadow, scaled and faded (for pops and stamps)."""
-        fg = font.render(msg, True, color)
-        surf = pygame.Surface((fg.get_width() + 3, fg.get_height() + 3), pygame.SRCALPHA)
-        surf.blit(font.render(msg, True, (0, 0, 0)), (3, 3))
-        surf.blit(fg, (0, 0))
+        """Centred outlined text, scaled and faded (for pops and stamps)."""
+        surf = render_outlined(font, msg, color)
         if abs(scale - 1.0) > 1e-3:
             surf = pygame.transform.smoothscale(surf, (max(1, int(surf.get_width() * scale)),
                                                        max(1, int(surf.get_height() * scale))))
@@ -1303,7 +1315,11 @@ class Game:
 
         if self.mode in (MODE_FIGHT, MODE_OVER):
             bw = int(w * 0.38)
-            self._bar(30, 30, bw, 22, self.player.hp, self.trail_player, C.PLAYER_MAX_HP, C.PLAYER_BAR)
+            bar_color = C.PLAYER_BAR
+            if self.low_health > 0:  # your bar throbs red with the heartbeat
+                k = self.sfx.heartbeat_pulse(time.perf_counter())
+                bar_color = tuple(int(a + (b - a) * k) for a, b in zip((255, 60, 60), (255, 200, 200)))
+            self._bar(30, 30, bw, 22, self.player.hp, self.trail_player, C.PLAYER_MAX_HP, bar_color)
             self._bar(w - 30 - bw, 30, bw, 22, self.enemy.hp, self.trail_enemy, self.enemy.max_hp, C.ENEMY_BAR,
                       True)
             self._text("YOU", (30, 58), self.font)

@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Tuple
 import pygame
 
 from . import config as C
+from .effects import render_outlined
 from .geometry import Capsule, Circle, Vec, draw_shape
 
 # Body proportions as fractions of total height H.
@@ -243,7 +244,8 @@ def _make_glow(radius: int, color) -> pygame.Surface:
 class ShadowEnemy:
     def __init__(self, screen_w: int, screen_h: int):
         self.sw, self.sh = screen_w, screen_h
-        self.font = pygame.font.Font(None, 40)
+        self.cue_font = pygame.font.Font(None, C.CUE_TEXT_SIZE)
+        self._cue_cache: Dict[Tuple[str, Tuple[int, int, int]], pygame.Surface] = {}
         self.debug_font = pygame.font.Font(None, 22)
         self.reset(ground_y=screen_h - 10, height=screen_h * 0.75, x=screen_w * 0.75, boss=C.BOSSES[0])
 
@@ -1094,9 +1096,7 @@ class ShadowEnemy:
             glow = self._spell_glows[spell]
             for hand in ("f_hand", "r_hand"):
                 surf.blit(glow, glow.get_rect(center=_ipt(sk[hand])), special_flags=pygame.BLEND_ADD)
-            if int(self.anim_t * 8) % 2 == 0:
-                label = self.font.render(self.attack.cue, True, (255, 220, 80))
-                surf.blit(label, label.get_rect(center=(int(self.x), int(sk["head"][1] - 0.15 * H))))
+            self._draw_cue(surf, self.attack.cue, (self.x, sk["head"][1] - 0.15 * H))
             return
 
         # Telegraph: glowing limb during the wind-up.
@@ -1106,13 +1106,22 @@ class ShadowEnemy:
             glow.fill((int(255 * (0.4 + 0.6 * progress)),) * 3, special_flags=pygame.BLEND_MULT)
             p = self._limb_end(sk, self.attack.limb)
             surf.blit(glow, glow.get_rect(center=_ipt(p)), special_flags=pygame.BLEND_ADD)
-            if self.attack.cue and int(self.anim_t * 8) % 2 == 0:
-                label = self.font.render(self.attack.cue, True, (255, 220, 80))
-                if self.attack.target == "legs":
-                    pos = (int(self.x), int(self.ground_y - 0.55 * H))
-                else:
-                    pos = (int(self.x), int(sk["head"][1] - 0.13 * H))
-                surf.blit(label, label.get_rect(center=pos))
+            if self.attack.cue:
+                legs = self.attack.target == "legs"
+                self._draw_cue(surf, self.attack.cue, (self.x, self.ground_y - 0.55 * H if legs
+                                                       else sk["head"][1] - 0.13 * H))
+
+    def _draw_cue(self, surf: pygame.Surface, cue: str, pos: Vec) -> None:
+        """Big outlined warning ('JUMP!', 'DUCK!', ...) that flashes yellow/white; kept on screen."""
+        color = (255, 220, 80) if int(self.anim_t * 8) % 2 == 0 else (255, 255, 255)
+        key = (cue, color)
+        label = self._cue_cache.get(key)
+        if label is None:
+            label = self._cue_cache[key] = render_outlined(self.cue_font, cue, color)
+        hw, hh = label.get_width() / 2, label.get_height() / 2
+        x = min(max(pos[0], hw + 8), surf.get_width() - hw - 8)
+        y = min(max(pos[1], hh + 70), surf.get_height() - hh - 8)  # clear of the health bars
+        surf.blit(label, label.get_rect(center=(int(x), int(y))))
 
     def _draw_sword(self, surf: pygame.Surface, sk: Dict[str, Vec], flashing: bool) -> None:
         H = self.H
