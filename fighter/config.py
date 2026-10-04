@@ -145,7 +145,94 @@ BOSSES = [
         "headband": None,
         "staff": True,            # fights with a staff (arms hold it; it has its own hitbox)
     },
+    {
+        "name": "EGYPTIAN SOLDIER",
+        "max_hp": 160,            # the least health, but the hardest hitter
+        "dodge_chance": 0.25,
+        "roll_chance": 0.0,
+        "dodge_cooldown": 0.9,
+        "kick_block_chance": 0.30,
+        "attack_speed": 1.15,
+        "idle_min": 0.25,
+        "idle_max": 0.55,
+        "attack_weights": {"sword_slash": 3.0, "sword_cut": 2.5, "high_kick": 1.5, "low_sweep": 1.2},
+        "flip_chance": 0.25,      # chance, when choosing a move, to flip over you and slash from behind
+        "rim": (210, 170, 60),
+        "headband": None,
+        "sword": True,            # curved khopesh in the front hand
+        "headdress": True,
+        "player_shield": True,    # you get a shield on your left arm for this fight
+    },
+    {
+        "name": "MAGE",
+        "max_hp": 260,
+        "dodge_chance": 0.15,
+        "roll_chance": 0.0,
+        "dodge_cooldown": 1.0,
+        "kick_block_chance": 0.20,
+        "attack_speed": 1.0,
+        "idle_min": 0.6,          # a little breathing room between spells
+        "idle_max": 1.0,
+        "attack_weights": {"meteor": 2.0, "icicle_rain": 2.5, "fire_wall_low": 2.0, "fire_wall_high": 2.0},
+        "no_repeat": True,        # never casts the same spell twice in a row
+        "teleports": True,        # defensive teleport when you pressure him (see MAGE_TELEPORT_*)
+        "rim": (120, 95, 255),
+        "headband": None,
+        "robe": True,
+    },
 ]
+
+# --- Sword (Egyptian Soldier) and your shield ---------------------------------------
+SWORD_PARRY_STAGGER = 1.2         # seconds he staggers after his sword hits your shield
+FLIP_TIME = 0.8                   # crouch + flip over you
+FLIP_HEIGHT = 0.65                # apex of the flip, in his body heights
+SHIELD_RADIUS = 0.367             # torso units (2/3 of the original 0.55)
+SHIELD_COLOR = (150, 105, 40)
+SHIELD_RIM_COLOR = (225, 185, 95)
+BLADE_COLOR = (185, 160, 105)
+
+# --- Mage spells -------------------------------------------------------------------
+# Every spell captures your position when the cast starts and its danger zones never move.
+# Distances are in torso units (your torso length) unless noted.
+MAGE_CAST_WINDUP = 0.4            # hands raised before the spell appears
+MAGE_CAST_CHANNEL = 0.9           # holds the cast while the warnings count down
+MAGE_RECOVERY = 1.3               # hunched and drained after each spell: your opening to attack
+
+METEOR_RADIUS = 1.0               # half-width of the danger zone on the floor
+METEOR_WARNING = 1.8              # seconds from the circle appearing to impact
+METEOR_FALL_TIME = 0.5            # last part of the warning, when the meteor is visibly falling
+METEOR_DAMAGE = 30
+
+ICICLE_COUNT = (5, 8)             # min, max zones (fewer if the screen edge leaves no room)
+ICICLE_RADIUS = 0.22
+ICICLE_SPACING = 0.32             # centre-to-centre spacing of the zones in the storm
+ICICLE_AREA = 2.2                 # the storm spans this far either side of you (rest of the floor is clear)
+ICICLE_MAX_FLOOR = 0.7            # ...but never more than this fraction of the playable floor
+ICICLE_SAFE_GAP = 1.3             # one guaranteed clear gap this wide inside the storm...
+ICICLE_GAP_OFFSET = (0.9, 1.4)    # ...centred this far to one side of where you stood
+ICICLE_WARNING = 1.3              # seconds until the first icicle lands
+ICICLE_STAGGER = 0.14             # seconds between consecutive impacts
+ICICLE_FALL_TIME = 0.35
+ICICLE_DAMAGE = 10
+
+PLAYER_HALF_WIDTH = 0.3           # your body's half-width when checking ground zones
+
+FIRE_WALL_TELEGRAPH = 1.1         # seconds the path glows before the wall launches
+FIRE_WALL_SPEED = 1.0             # body heights / second
+FIRE_WALL_WIDTH = 0.22            # thickness of the wall, in the mage's body heights
+FIRE_WALL_LOW_HEIGHT = 0.28       # low wall: floor up to this fraction of body height (jump it)
+FIRE_WALL_HIGH_CLEARANCE = 0.2    # high wall: its bottom edge sits this far below your standing head
+FIRE_WALL_HIGH_THICKNESS = 1.2    # how far the high wall extends up from its bottom edge
+FIRE_WALL_DAMAGE = 16
+FIRE_WALL_MIN_LEAD = 0.5          # the wall always starts at least this many body heights from you
+
+MAGE_TELEPORT_TRIGGER_DIST = 0.8  # "close" = within this many body heights of you
+MAGE_TELEPORT_PRESSURE = 3.5      # seconds of being close (accumulated) before he repositions
+MAGE_TELEPORT_DECAY = 0.5         # pressure drains at this rate per second while you're away
+MAGE_TELEPORT_COOLDOWN = 10.0
+MAGE_TELEPORT_TELL = 0.5          # shimmer before vanishing
+MAGE_TELEPORT_GONE = 0.25         # time invisible
+MAGE_TELEPORT_DISTANCE = 0.4      # reappears this fraction of the screen width from you
 
 # --- Staff (Ninja Monk) ------------------------------------------------------------
 STAFF_PARRY_STUN = 0.5            # seconds the monk staggers when you hit his staff mid-attack
@@ -161,6 +248,7 @@ STAR_THROW_DISTANCE = 0.38        # boss backs off to this fraction of the scree
 # --- Flow ---------------------------------------------------------------------
 COUNTDOWN_SECONDS = 3
 NEXT_BOSS_DELAY = 3.5             # seconds of celebration before the next boss's countdown
+SAVE_FILE = "save_data.json"      # remembers the furthest boss you've reached (next to ar_fighter.py)
 
 # --- Colours -----------------------------------------------------------------
 ENEMY_BODY = (8, 6, 12)

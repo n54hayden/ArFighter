@@ -70,6 +70,8 @@ class PlayerTracker:
         self.base_torso = 1.0
         self.base_shoulder = 1.0
         self._head_ref = self.sh * 0.3
+        self.shield_enabled = False                # only for bosses that hand you a shield
+        self.shield_side = "l"                    # landmark side of your real left arm (set in calibration)
         self.depth_ratio = 1.0                    # current size / calibrated size
         self.unit = 100.0                         # current torso length in pixels
         self.ground_y = float(self.sh)            # floor line for the enemy
@@ -170,6 +172,7 @@ class PlayerTracker:
             "hip": _mid(raw["l_hip"], raw["r_hip"])[1],
             "ankle": max(ankles) if ankles else None,
             "nose": raw["nose"][1] if "nose" in raw else None,
+            "lr_dx": raw["l_shoulder"][0] - raw["r_shoulder"][0],
         })
 
     def _finish_calibration(self) -> None:
@@ -197,6 +200,9 @@ class PlayerTracker:
         self._head_ref = nose - 0.1 * self.base_torso  # same point as head().center
         self.body_height = max(self.sh * 0.3, min(self.sh * 1.2, self.body_height))
         self._ground_offset = {k: 0.0 for k in self._ground_ref}
+        # The camera image is mirrored, so your real left arm is the one on the left of the
+        # screen. Decide it from where the shoulders were, not from MediaPipe's labels.
+        self.shield_side = "l" if med("lr_dx") < 0 else "r"
         self.depth_ratio = 1.0
         self.unit = self.base_torso
         self.calibrated = True
@@ -342,6 +348,28 @@ class PlayerTracker:
                 out[side] = Circle(p, C.FOOT_RADIUS * self.unit)
         return out
 
+    def shield(self) -> Optional[Circle]:
+        """Round shield strapped to your left forearm (when this fight gives you one)."""
+        if not self.shield_enabled:
+            return None
+        e, w = self.pts.get(f"{self.shield_side}_elbow"), self.pts.get(f"{self.shield_side}_wrist")
+        if e is None or w is None:
+            return None
+        centre = (e[0] + (w[0] - e[0]) * 0.9, e[1] + (w[1] - e[1]) * 0.9)  # gripped near the hand
+        return Circle(centre, C.SHIELD_RADIUS * self.unit)
+
+    def draw_shield(self, surf: pygame.Surface) -> None:
+        sh = self.shield()
+        if sh is None:
+            return
+        c, r = (int(sh.center[0]), int(sh.center[1])), int(sh.radius)
+        pygame.draw.circle(surf, (25, 18, 8), (c[0] + 4, c[1] + 4), r)               # drop shadow
+        pygame.draw.circle(surf, C.SHIELD_COLOR, c, r)
+        pygame.draw.circle(surf, C.SHIELD_RIM_COLOR, c, r, max(3, r // 9))
+        pygame.draw.circle(surf, C.SHIELD_RIM_COLOR, c, int(r * 0.62), max(2, r // 18))
+        pygame.draw.circle(surf, C.SHIELD_RIM_COLOR, c, max(4, r // 5))                # central boss
+        pygame.draw.circle(surf, (110, 75, 25), c, max(2, r // 9))
+
     def legs(self) -> List[Capsule]:
         r = C.LEG_RADIUS * self.unit
         out = []
@@ -375,6 +403,9 @@ class PlayerTracker:
             draw_shape(surf, leg, (255, 160, 40))
         for fa in self.forearms():
             draw_shape(surf, fa, (60, 200, 255), 3)
+        sh = self.shield()
+        if sh:
+            draw_shape(surf, sh, (255, 210, 90), 2)
         for side, fist in self.fists().items():
             fast = self.fist_speed(side) >= C.PUNCH_SPEED_THRESHOLD
             draw_shape(surf, fist, (255, 60, 60) if fast else (255, 230, 60), 0 if fast else 2)

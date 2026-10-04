@@ -22,6 +22,8 @@ from .geometry import Capsule, Circle, Vec, draw_shape
 UPPER_ARM, FOREARM, THIGH, SHIN = 0.17, 0.16, 0.245, 0.245
 TORSO, HEAD_OFFSET, HEAD_R, FOOT_LEN, FOOT_H = 0.30, 0.11, 0.065, 0.07, 0.02
 STAFF_LEN, STAFF_R, STAFF_HAND_GAP = 0.95, 0.016, 0.09
+# Khopesh: a short straight part from the hand, then a hooked curve.
+BLADE_STRAIGHT, BLADE_CURVE_SEGS, BLADE_SEG, BLADE_BEND, BLADE_W = 0.14, 4, 0.055, -15.0, 0.016
 
 Pose = Dict[str, float]
 
@@ -30,7 +32,8 @@ Pose = Dict[str, float]
 #   sx, sy = grip centre relative to the shoulder (H units, +x forward, +y down)
 #   so = how far the staff is slid forward through the grip (H units)
 GUARD: Pose = dict(lean=8, fs=40, fe=100, rs=20, re=130, fh=18, fk=-24, rh=-16, rk=-6, dx=0.0,
-                   sa=172, sx=0.05, sy=0.2, so=0.0)  # staff held upright beside the body (not shielding it)
+                   sa=172, sx=0.05, sy=0.2, so=0.0,  # staff held upright beside the body (not shielding it)
+                   wa=150)  # sword blade angle (absolute, same convention), for bosses with a sword
 
 
 def _pose(**overrides: float) -> Pose:
@@ -70,6 +73,24 @@ STAFF_HIGH_WIND = _pose(lean=-4, sa=90, sx=-0.18, sy=-0.05, so=-0.25)
 STAFF_HIGH_EXT = _pose(lean=6, sa=90, sx=0.14, sy=-0.05, so=0.35, dx=0.04)
 STAFF_POKE_WIND = _pose(lean=-12, sa=91, sx=-0.12, sy=0.07, so=-0.25, dx=-0.06)    # pulled back
 STAFF_POKE_EXT = _pose(lean=22, sa=90, sx=0.22, sy=0.07, so=0.42, dx=0.14)         # lunging thrust
+# Egyptian Soldier's khopesh (front hand).
+SWORD_SLASH_WIND = _pose(lean=-6, fs=130, fe=25, wa=215)                 # raised up and back
+SWORD_SLASH_EXT = _pose(lean=18, fs=105, fe=0, wa=105, dx=0.06)          # comes over the top at head height
+SWORD_CUT_WIND = _pose(lean=2, fs=10, fe=130, wa=-60)                    # blade low behind
+SWORD_CUT_EXT = _pose(lean=16, fs=88, fe=5, wa=114, dx=0.07)             # rising cut, ends at the chest
+SWORD_FLUNG_POSE = _pose(lean=-24, fs=175, fe=30, wa=240, rs=-40, re=20, fh=25, fk=-35, dx=-0.05)  # parried
+FLIP_CROUCH_POSE = _pose(lean=25, rh=55, rk=-100, fh=60, fk=-110, fs=20, fe=90)
+# Mage casting poses.
+CAST_UP_WIND = _pose(lean=-4, fs=120, fe=30, rs=110, re=40)
+CAST_UP = _pose(lean=-10, fs=165, fe=10, rs=155, re=15)                              # meteor / icicles
+CAST_LOW_WIND = _pose(lean=10, fs=30, fe=60, rs=20, re=70, fh=30, fk=-50, rh=-5, rk=-35)
+CAST_LOW = _pose(lean=30, fs=60, fe=10, rs=50, re=15, fh=40, fk=-70, rh=0, rk=-50, dx=0.03)  # low fire wall
+CAST_HIGH_WIND = _pose(lean=-6, fs=60, fe=110, rs=50, re=120)
+CAST_HIGH = _pose(lean=10, fs=105, fe=5, rs=100, re=10, dx=0.03)                       # high fire wall
+MAGE_TIRED = _pose(lean=28, fs=10, fe=20, rs=0, re=25, fh=25, fk=-40, rh=-10, rk=-25)  # drained after a spell
+TELEPORT_POSE = _pose(lean=0, fs=100, fe=130, rs=95, re=135)                           # arms crossed, shimmering
+SPELL_COLORS = {"meteor": (255, 120, 30), "icicle_rain": (120, 220, 255),
+                "fire_wall_low": (255, 90, 30), "fire_wall_high": (170, 110, 255)}
 KNOCKDOWN_TILT = 88.0  # degrees the body rotates backward when it falls
 
 
@@ -106,6 +127,7 @@ class AttackSpec:
     unblockable: bool = False
     ranged: bool = False   # throws a projectile at the end of the strike phase instead of hitting
     cue: str = ""          # warning shown during the wind-up ("JUMP!", "DUCK!", ...)
+    spell: str = ""        # Mage: spell cast at the start of the attack (hazards handled by the game)
 
 
 def _attack(name, label, limb, target, damage, chip, min_depth, radius, wind, ext, t_wind, t_strike, t_hold, t_rec,
@@ -144,7 +166,33 @@ ATTACKS: Dict[str, AttackSpec] = {a.name: a for a in (
             STAFF_HIGH_EXT, 0.55, 0.22, 0.12, 0.50, live_from=0.3, cue="DUCK LOW!"),
     _attack("staff_poke", "Staff Poke", "staff", "torso", 12, 0.35, 0.90, 0.03, STAFF_POKE_WIND,
             STAFF_POKE_EXT, 0.60, 0.12, 0.15, 0.50, live_from=0.4, cue="JUMP BACK!"),
+    # Egyptian Soldier's sword: hits hardest. Your shield parries it; a forearm block only reduces it.
+    _attack("sword_slash", "Sword Slash", "sword", "head", 24, 0.3, 0.82, 0.03, SWORD_SLASH_WIND,
+            SWORD_SLASH_EXT, 0.45, 0.14, 0.10, 0.45, live_from=0.45),
+    _attack("sword_cut", "Sword Cut", "sword", "torso", 20, 0.3, 0.85, 0.03, SWORD_CUT_WIND,
+            SWORD_CUT_EXT, 0.40, 0.12, 0.10, 0.40, live_from=0.8),
+    # Same slash with almost no wind-up, used right after flipping over you.
+    _attack("sword_flip_slash", "Flip Slash", "sword", "head", 24, 0.3, 0.82, 0.03, SWORD_SLASH_WIND,
+            SWORD_SLASH_EXT, 0.22, 0.14, 0.10, 0.45, live_from=0.45),
 )}
+
+
+def _spell(name: str, label: str, wind: Pose, cast: Pose, target: str, cue: str) -> AttackSpec:
+    """A Mage spell: wind-up, channel while the warnings count down, then a long drained recovery."""
+    return AttackSpec(name, label, "front_hand", target, 0.0, 1.0, 0.0, 0.03, (
+        Phase(wind, C.MAGE_CAST_WINDUP),
+        Phase(cast, C.MAGE_CAST_CHANNEL),
+        Phase(MAGE_TIRED, 0.3),
+        Phase(MAGE_TIRED, C.MAGE_RECOVERY),  # vulnerable: no dodging or teleporting mid-attack
+    ), cue=cue, spell=name)
+
+
+ATTACKS.update({a.name: a for a in (
+    _spell("meteor", "Meteor", CAST_UP_WIND, CAST_UP, "torso", "MOVE!"),
+    _spell("icicle_rain", "Icicle Rain", CAST_UP_WIND, CAST_UP, "torso", "MOVE!"),
+    _spell("fire_wall_low", "Low Fire Wall", CAST_LOW_WIND, CAST_LOW, "legs", "JUMP!"),
+    _spell("fire_wall_high", "High Fire Wall", CAST_HIGH_WIND, CAST_HIGH, "head", "DUCK!"),
+)})
 
 
 class EnemyState(Enum):
@@ -153,6 +201,8 @@ class EnemyState(Enum):
     ATTACK = auto()
     STUNNED = auto()
     DODGE = auto()
+    FLIP = auto()
+    TELEPORT = auto()
     KNOCKDOWN = auto()
     DEAD = auto()
 
@@ -235,9 +285,26 @@ class ShadowEnemy:
         self.dodge_cooldown = 0.0
         self.rolling = False
         self.spin = 0.0          # roll rotation (degrees, backward)
+        self.flip_t = 0.0
+        self.flip_from = self.flip_to = 0.0
+        self.flip_angle = 0.0    # front flip rotation (degrees)
+        self.lift = 0.0          # height off the floor while flipping (pixels)
+        self._flip_started = False
+        self.stun_pose: Pose = STUN_POSE
+        self.hazards_active = False   # set by the game: a spell's hazards are still live
+        self.last_attack: Optional[str] = None
+        self._casts: List[dict] = []
+        self.pressure = 0.0           # Mage: accumulated time the player has spent close by
+        self.teleport_cd = 0.0
+        self.tele_t = 0.0
+        self.tele_dest = x
+        self.visible = True
+        self._tele_events: List[Tuple[str, Vec]] = []
+        self._spell_glows = {k: _make_glow(max(8, int(height * 0.07)), c) for k, c in SPELL_COLORS.items()}
         self._landed = False
         self._thrown: List[Tuple[Vec, Vec]] = []
-        self._reach = {name: self._strike_offset(ATTACKS[name]) for name in boss["attack_weights"]}
+        moves = list(boss["attack_weights"]) + (["sword_flip_slash"] if boss.get("flip_chance") else [])
+        self._reach = {name: self._strike_offset(ATTACKS[name]) for name in moves}
         glow_r = max(8, int(self.H * 0.09))
         self._glow = _make_glow(glow_r, (255, 50, 30))
         self._shadow = pygame.Surface((int(self.H * 0.5), int(self.H * 0.06)), pygame.SRCALPHA)
@@ -288,6 +355,16 @@ class ShadowEnemy:
         }
         if staff:
             sk["staff_back"], sk["staff_tip"] = staff
+        if self.boss.get("sword"):
+            # sword_0 is the hilt (in the hand); the blade runs straight, then hooks.
+            angle = p["wa"]
+            sk["sword_0"] = f_hand
+            pt = _add(f_hand, _dir(angle, f), BLADE_STRAIGHT * H)
+            sk["sword_1"] = pt
+            for i in range(BLADE_CURVE_SEGS):
+                angle += BLADE_BEND
+                pt = _add(pt, _dir(angle, f), BLADE_SEG * H)
+                sk[f"sword_{i + 2}"] = pt
         return sk
 
     def _reach_for(self, shoulder: Vec, target: Vec) -> Tuple[Vec, Vec]:
@@ -347,12 +424,14 @@ class ShadowEnemy:
             return sk["r_hand"]
         if limb == "staff":
             return sk["staff_tip"]
+        if limb == "sword":
+            return sk[f"sword_{BLADE_CURVE_SEGS + 1}"]
         a, t = sk["f_ankle"], sk["f_toe"]
         return ((a[0] + t[0]) * 0.5, (a[1] + t[1]) * 0.5)
 
     def _strike_offset(self, spec: AttackSpec) -> float:
         """Furthest forward distance the striking limb reaches while its hitbox is live."""
-        if spec.ranged:
+        if spec.ranged or spec.spell:
             return 0.0
         i = next(i for i, ph in enumerate(spec.phases) if ph.active)
         start, ph = spec.phases[i - 1].pose, spec.phases[i]
@@ -366,7 +445,8 @@ class ShadowEnemy:
     # --- colliders -----------------------------------------------------------
     @property
     def can_be_hit(self) -> bool:
-        return self.state not in (EnemyState.DEAD, EnemyState.KNOCKDOWN, EnemyState.DODGE)
+        return self.state not in (EnemyState.DEAD, EnemyState.KNOCKDOWN, EnemyState.DODGE, EnemyState.FLIP,
+                                  EnemyState.TELEPORT)
 
     def hurtboxes(self) -> List:
         if not self.can_be_hit:
@@ -395,6 +475,35 @@ class ShadowEnemy:
         if not self.can_be_hit or "staff_tip" not in self.sk:
             return None
         return Capsule(self.sk["staff_back"], self.sk["staff_tip"], STAFF_R * self.H * 1.6)
+
+    def sword_capsules(self) -> List[Capsule]:
+        """The blade, segment by segment (hilt to tip)."""
+        if "sword_1" not in self.sk:
+            return []
+        pts = [self.sk[f"sword_{i}"] for i in range(0, BLADE_CURVE_SEGS + 2)]
+        return [Capsule(a, b, BLADE_W * self.H) for a, b in zip(pts, pts[1:])]
+
+    def sword_parried(self) -> None:
+        """His sword hit your shield: it's flung back and he staggers, wide open."""
+        self.attack_resolved = True
+        self.state = EnemyState.STUNNED
+        self.attack = None
+        self.stun_t = C.SWORD_PARRY_STAGGER
+        self.stun_pose = SWORD_FLUNG_POSE
+        self.vx = -self.facing * C.ENEMY_KNOCKBACK * self.H * 0.5
+
+    def pop_casts(self) -> List[dict]:
+        """Spells started since the last call, each with a snapshot of the player at cast time."""
+        casts, self._casts = self._casts, []
+        return casts
+
+    def pop_teleport_events(self) -> List[Tuple[str, Vec]]:
+        events, self._tele_events = self._tele_events, []
+        return events
+
+    def pop_flip_started(self) -> bool:
+        started, self._flip_started = self._flip_started, False
+        return started
 
     def staff_struck(self) -> str:
         """Player hit the staff. Mid-attack it's a parry (attack cancelled, monk staggered),
@@ -452,6 +561,7 @@ class ShadowEnemy:
         self.state = EnemyState.STUNNED
         self.attack = None
         self.stun_t = C.ENEMY_STUN_TIME
+        self.stun_pose = STUN_POSE
         self.vx = -self.facing * C.ENEMY_KNOCKBACK * self.H
         return "stun"
 
@@ -479,6 +589,7 @@ class ShadowEnemy:
             self.state = EnemyState.STUNNED
             self.attack = None
             self.stun_t = C.ENEMY_STUN_TIME
+            self.stun_pose = STUN_POSE
             self.vx = -self.facing * C.ENEMY_KICK_KNOCKBACK * self.H
             return "knockback"
         self.state = EnemyState.KNOCKDOWN
@@ -521,6 +632,8 @@ class ShadowEnemy:
     # --- AI ------------------------------------------------------------------
     def _pick_attack(self) -> AttackSpec:
         names = list(self.boss["attack_weights"])
+        if self.boss.get("no_repeat") and len(names) > 1 and self.last_attack in names:
+            names.remove(self.last_attack)
         weights = [self.boss["attack_weights"][n] for n in names]
         return ATTACKS[random.choices(names, weights)[0]]
 
@@ -531,6 +644,8 @@ class ShadowEnemy:
         self.attack = None
 
     def _desired_x(self, player, spec: AttackSpec) -> float:
+        if spec.spell:  # spells are cast from wherever the Mage stands
+            return self.x
         tx = player.target_point(spec.target)[0]
         if spec.ranged:  # back off to throwing distance
             stand_off = C.STAR_THROW_DISTANCE * self.sw
@@ -548,7 +663,15 @@ class ShadowEnemy:
             d = tx - side * stand_off  # no room against the wall: go around to the other side
         return d
 
-    def _start_attack(self, spec: AttackSpec) -> None:
+    def _start_attack(self, spec: AttackSpec, player=None) -> None:
+        self.last_attack = spec.name
+        if spec.spell and player is not None:
+            # Capture the player's position NOW; the hazards are placed from this and never move.
+            self._casts.append({
+                "spell": spec.spell, "x": player.hip_mid()[0], "unit": player.unit,
+                "ground_y": self.ground_y, "head_y": player.standing_head_y(),
+                "origin_x": self.x + self.facing * 0.15 * self.H,
+            })
         self.state = EnemyState.ATTACK
         self.attack = spec
         self.phase_i = 0
@@ -619,6 +742,8 @@ class ShadowEnemy:
 
         paused = not (player.calibrated and player.tracked)
         target: Optional[Pose] = None
+        if self.boss.get("teleports") and not paused:
+            self._track_pressure(dt, player)
 
         if self.state is EnemyState.ATTACK:
             self._update_attack(dt, player, paused)
@@ -626,12 +751,17 @@ class ShadowEnemy:
             self.x += self.vx * dt
             self.vx *= math.exp(-7.0 * dt)
             self.stun_t -= dt
-            target = _pose(**{**STUN_POSE, "lean": STUN_POSE["lean"] + 6 * math.sin(self.anim_t * 18)})
+            target = dict(self.stun_pose)
+            target["lean"] += 6 * math.sin(self.anim_t * 18)
             if self.stun_t <= 0:
                 self._enter_idle(random.uniform(0.25, 0.5))
                 self.stun_immunity = C.ENEMY_STUN_IMMUNITY
         elif self.state is EnemyState.KNOCKDOWN:
             target = self._update_knockdown(dt)
+        elif self.state is EnemyState.FLIP:
+            target = self._update_flip(dt, player)
+        elif self.state is EnemyState.TELEPORT:
+            target = self._update_teleport(dt, player)
         elif self.state is EnemyState.DODGE:
             self.x += self.vx * dt
             self.dodge_t -= dt
@@ -656,16 +786,22 @@ class ShadowEnemy:
             if self.state is EnemyState.IDLE:
                 self.state_t += dt
                 target = self._idle_pose()
-                if self.state_t >= self.idle_time:
-                    self.next_attack = self.queued or self._pick_attack()
-                    self.queued = None
-                    self.state = EnemyState.APPROACH
-                    self.approach_t = 0.0
+                if self._should_teleport():
+                    self._start_teleport(player)
+                elif self.state_t >= self.idle_time and not self.hazards_active:
+                    if not self.queued and random.random() < self.boss.get("flip_chance", 0.0) \
+                            and self._try_flip(player):
+                        pass
+                    else:
+                        self.next_attack = self.queued or self._pick_attack()
+                        self.queued = None
+                        self.state = EnemyState.APPROACH
+                        self.approach_t = 0.0
             elif self.state is EnemyState.APPROACH:
                 self.approach_t += dt
                 diff = self._desired_x(player, self.next_attack) - self.x
                 if abs(diff) <= 0.035 * self.H or self.approach_t > C.ENEMY_APPROACH_TIMEOUT:
-                    self._start_attack(self.next_attack)
+                    self._start_attack(self.next_attack, player)
                 else:
                     step = math.copysign(min(abs(diff), C.ENEMY_WALK_SPEED * self.H * dt), diff)
                     self.x += step
@@ -680,7 +816,7 @@ class ShadowEnemy:
         if target is not None:
             k = 1.0 - math.exp(-dt * C.ENEMY_POSE_BLEND)
             self.pose = lerp_pose(self.pose, target, k)
-        self.sk = self._apply_spin(self._apply_tilt(self._skeleton(self.pose, self.x, self.facing)))
+        self.sk = self._apply_flip(self._apply_spin(self._apply_tilt(self._skeleton(self.pose, self.x, self.facing))))
         if self.state is EnemyState.ATTACK:
             cur = self._limb_end(self.sk, self.attack.limb)
             # Sweep only between live frames, never back into the wind-up.
@@ -688,6 +824,103 @@ class ShadowEnemy:
             self._strike_prev = self._strike_cur if (live and self._was_live) else cur
             self._strike_cur = cur
             self._was_live = live
+
+    # --- Mage: defensive teleport ----------------------------------------------
+    def _track_pressure(self, dt: float, player) -> None:
+        """Build up 'pressure' while the player stays close; drain it slowly while they're away."""
+        self.teleport_cd = max(0.0, self.teleport_cd - dt)
+        if self.state is EnemyState.TELEPORT:
+            return
+        if abs(self.x - player.com_x()) < C.MAGE_TELEPORT_TRIGGER_DIST * self.H:
+            self.pressure += dt
+        else:
+            self.pressure = max(0.0, self.pressure - C.MAGE_TELEPORT_DECAY * dt)
+
+    def _should_teleport(self) -> bool:
+        # Only from IDLE (never mid-cast, stunned or knocked down), only after sustained pressure,
+        # and never while on cooldown. Getting hit doesn't add pressure by itself.
+        return (bool(self.boss.get("teleports")) and self.teleport_cd <= 0
+                and self.pressure >= C.MAGE_TELEPORT_PRESSURE)
+
+    def _start_teleport(self, player) -> None:
+        self.state = EnemyState.TELEPORT
+        self.tele_t = 0.0
+        com = player.com_x()
+        d = C.MAGE_TELEPORT_DISTANCE * self.sw
+        options = [x for x in (com - d, com + d) if self.sw * 0.1 <= x <= self.sw * 0.9]
+        if not options:  # squeezed against a wall: take whichever spot is further from the player
+            options = [max(self.sw * 0.1, min(self.sw * 0.9, com + d * (1 if com < self.sw / 2 else -1)))]
+        self.tele_dest = random.choice(options)
+        self._tele_events.append(("tell", self.center()))
+
+    def _update_teleport(self, dt: float, player) -> Pose:
+        self.tele_t += dt
+        tell, gone = C.MAGE_TELEPORT_TELL, C.MAGE_TELEPORT_GONE
+        if self.visible and self.tele_t >= tell:
+            self.visible = False
+            self._tele_events.append(("out", self.center()))
+        if not self.visible and self.tele_t >= tell + gone:
+            self.x = self.tele_dest
+            self.facing = 1 if player.com_x() >= self.x else -1
+            self.visible = True
+            self.pressure = 0.0
+            self.teleport_cd = C.MAGE_TELEPORT_COOLDOWN
+            self._enter_idle(0.6)
+            self.sk = self._skeleton(GUARD, self.x, self.facing)
+            self._tele_events.append(("in", self.center()))
+            return GUARD
+        return TELEPORT_POSE
+
+    def _try_flip(self, player) -> bool:
+        """Leap over the player, landing at slashing distance on their other side."""
+        spec = ATTACKS["sword_flip_slash"]
+        side = 1 if self.x > player.com_x() else -1          # which side of the player we're on now
+        tx = player.target_point(spec.target)[0]
+        land = tx - side * (self._reach[spec.name] + C.ENEMY_AIM_OFFSET * player.unit)
+        if not self.sw * 0.08 <= land <= self.sw * 0.92:
+            return False
+        self.state = EnemyState.FLIP
+        self.flip_t = 0.0
+        self.flip_from, self.flip_to = self.x, land
+        return True
+
+    def _update_flip(self, dt: float, player) -> Pose:
+        """Short crouch, front flip over the player, land facing them and slash at once."""
+        self.flip_t += dt
+        u = self.flip_t / C.FLIP_TIME
+        crouch = 0.18
+        if u < crouch:
+            return FLIP_CROUCH_POSE
+        if not self._flip_started and u >= crouch:
+            self._flip_started = True
+        v = min(1.0, (u - crouch) / (1.0 - crouch))
+        self.x = self.flip_from + (self.flip_to - self.flip_from) * _ease(v, "inout")
+        self.lift = math.sin(math.pi * v) * C.FLIP_HEIGHT * self.H
+        self.flip_angle = 360.0 * _ease(v, "inout")
+        if v >= 1.0:
+            self.lift = 0.0
+            self.flip_angle = 0.0
+            self.facing = -self.facing  # now on the other side, facing back at the player
+            self._start_attack(ATTACKS["sword_flip_slash"])
+            return GUARD
+        return TUCK_POSE if 0.1 < v < 0.85 else GUARD
+
+    def _apply_flip(self, sk: Dict[str, Vec]) -> Dict[str, Vec]:
+        """Front flip: rotate forward around the body's middle and lift off the floor."""
+        if self.flip_angle < 0.01 and self.lift < 0.5:
+            return sk
+        a = -math.radians(self.flip_angle) * self.facing  # forward, the opposite way to a backward roll
+        ca, sa = math.cos(a), math.sin(a)
+        cx = (sk["hip"][0] + sk["shoulder"][0]) * 0.5
+        cy = (sk["hip"][1] + sk["shoulder"][1]) * 0.5
+        out = {}
+        for k, (x, y) in sk.items():
+            if k == "spine":
+                out[k] = (x * ca + y * sa, -x * sa + y * ca)
+            else:
+                dx, dy = x - cx, y - cy
+                out[k] = (cx + dx * ca + dy * sa, cy - dx * sa + dy * ca - self.lift)
+        return out
 
     def _update_knockdown(self, dt: float) -> Pose:
         """Fall backward, lie on the floor, then get back up."""
@@ -716,7 +949,7 @@ class ShadowEnemy:
 
     # --- rendering -----------------------------------------------------------
     def draw(self, surf: pygame.Surface) -> None:
-        if self.state is EnemyState.DEAD:
+        if self.state is EnemyState.DEAD or not self.visible:
             return
         sk, H = self.sk, self.H
         shadow_x = self.x - self.facing * 0.45 * H * math.sin(math.radians(self.tilt))
@@ -741,9 +974,20 @@ class ShadowEnemy:
             ("cap", sk["shoulder"], sk["f_elbow"], 0.032), ("cap", sk["f_elbow"], sk["f_hand"], 0.028),
             ("circ", sk["f_hand"], 0.038),
         ]
+        if self.boss.get("robe"):
+            # Robe over the thighs (inserted before the arms) and a pointed hood.
+            knees = ((sk["f_knee"][0] + sk["r_knee"][0]) / 2, (sk["f_knee"][1] + sk["r_knee"][1]) / 2)
+            hem = (knees[0] + (knees[0] - sk["hip"][0]) * 0.35, knees[1] + (knees[1] - sk["hip"][1]) * 0.35)
+            robe = [_add(sk["shoulder"], n, 0.08 * H), _add(hem, n, 0.15 * H), _add(hem, n, -0.15 * H),
+                    _add(sk["shoulder"], n, -0.08 * H)]
+            fwd = (-sp[1] * f, sp[0] * f)
+            hd, R = sk["head"], HEAD_R * H
+            hood = [_add(_add(hd, sp, 1.25 * R), fwd, 0.3 * R), _add(_add(hd, sp, 1.4 * R), fwd, -1.9 * R),
+                    _add(_add(hd, sp, -0.9 * R), fwd, -1.1 * R), _add(_add(hd, sp, -0.7 * R), fwd, 0.35 * R)]
+            front[8:8] = [("poly", robe), ("poly", hood)]
 
         rim = max(2.0, 0.006 * H)
-        flashing = self.flash_t > 0
+        flashing = self.flash_t > 0 or (self.state is EnemyState.TELEPORT and int(self.anim_t * 24) % 2 == 0)
 
         def paint(parts, color, grow):
             for part in parts:
@@ -765,6 +1009,8 @@ class ShadowEnemy:
                 pygame.draw.circle(surf, C.STAFF_CAP_COLOR, _ipt(sk[end]), max(2, int(STAFF_R * H * 1.3)))
         paint(front, C.ENEMY_FLASH if flashing else C.ENEMY_BODY, 0)
 
+        if self.boss.get("headdress"):
+            self._draw_headdress(surf, sk)
         # Eye: white normally, red while attacking.
         angry = self.state is EnemyState.ATTACK
         eye = _add(sk["head"], (f, 0), 0.03 * H)
@@ -774,6 +1020,19 @@ class ShadowEnemy:
                             pygame.Rect(int(eye[0] - ew / 2), int(eye[1] - eh / 2), ew, eh))
         if self.boss.get("headband"):
             self._draw_headband(surf, sk, self.boss["headband"])
+        if "sword_1" in sk:
+            self._draw_sword(surf, sk, flashing)
+
+        # Mage: both hands glow in the spell's colour while casting.
+        spell = self.attack.spell if self.state is EnemyState.ATTACK and self.attack else ""
+        if spell and self.phase_i <= 1:
+            glow = self._spell_glows[spell]
+            for hand in ("f_hand", "r_hand"):
+                surf.blit(glow, glow.get_rect(center=_ipt(sk[hand])), special_flags=pygame.BLEND_ADD)
+            if int(self.anim_t * 8) % 2 == 0:
+                label = self.font.render(self.attack.cue, True, (255, 220, 80))
+                surf.blit(label, label.get_rect(center=(int(self.x), int(sk["head"][1] - 0.15 * H))))
+            return
 
         # Telegraph: glowing limb during the wind-up.
         if self.in_windup:
@@ -789,6 +1048,38 @@ class ShadowEnemy:
                 else:
                     pos = (int(self.x), int(sk["head"][1] - 0.13 * H))
                 surf.blit(label, label.get_rect(center=pos))
+
+    def _draw_sword(self, surf: pygame.Surface, sk: Dict[str, Vec], flashing: bool) -> None:
+        H = self.H
+        hand, first = sk["sword_0"], sk["sword_1"]
+        blade = [sk[f"sword_{i}"] for i in range(0, BLADE_CURVE_SEGS + 2)]
+        w = max(3, int(BLADE_W * 2 * H))
+        pygame.draw.lines(surf, (20, 14, 8), False, blade, w + 4)          # outline
+        pygame.draw.lines(surf, C.ENEMY_FLASH if flashing else C.BLADE_COLOR, False, blade, w)
+        for pt in blade:
+            pygame.draw.circle(surf, C.ENEMY_FLASH if flashing else C.BLADE_COLOR, _ipt(pt), w // 2)
+        length = math.hypot(first[0] - hand[0], first[1] - hand[1]) or 1.0
+        back = ((hand[0] - first[0]) / length, (hand[1] - first[1]) / length)
+        pygame.draw.line(surf, (40, 25, 12), hand, _add(hand, back, 0.045 * H), max(3, w))  # handle
+        pygame.draw.circle(surf, (40, 25, 12), _ipt(hand), max(2, int(0.02 * H)))           # fist on the hilt
+
+    def _draw_headdress(self, surf: pygame.Surface, sk: Dict[str, Vec]) -> None:
+        """Striped Egyptian headcloth hanging behind the head."""
+        H, f = self.H, self.facing
+        head, sp = sk["head"], sk["spine"]
+        n = (-sp[1] * f, sp[0] * f)  # points toward the back of the head
+        top = _add(head, sp, HEAD_R * H * 0.9)
+        back = _add(head, n, -HEAD_R * H * 1.05)
+        low = _add(_add(head, sp, -0.13 * H), n, -0.07 * H)
+        front_low = _add(_add(head, sp, -0.09 * H), n, 0.0)
+        poly = [_add(top, n, 0.02 * H), back, low, front_low]
+        pygame.draw.polygon(surf, (205, 165, 55), poly)
+        for t in (0.35, 0.65):  # blue stripes
+            a = (poly[0][0] + (poly[3][0] - poly[0][0]) * t, poly[0][1] + (poly[3][1] - poly[0][1]) * t)
+            b = (poly[1][0] + (poly[2][0] - poly[1][0]) * t, poly[1][1] + (poly[2][1] - poly[1][1]) * t)
+            pygame.draw.line(surf, (40, 70, 160), a, b, max(2, int(0.008 * H)))
+        pygame.draw.polygon(surf, (20, 14, 8), poly, 2)
+        pygame.draw.circle(surf, C.ENEMY_BODY, _ipt(head), int(HEAD_R * H * 0.75))  # face stays in shadow
 
     def _draw_headband(self, surf: pygame.Surface, sk: Dict[str, Vec], color) -> None:
         """Ninja headband: a band across the forehead with two tails fluttering behind."""
@@ -817,6 +1108,8 @@ class ShadowEnemy:
         staff = self.staff_collider()
         if staff:
             draw_shape(surf, staff, (255, 200, 80))
+        for cap in self.sword_capsules():
+            draw_shape(surf, cap, (255, 230, 120), 1)
         strike = self.strike_collider()
         if strike:
             draw_shape(surf, strike, (255, 40, 40), 0)
