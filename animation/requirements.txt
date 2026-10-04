@@ -1,0 +1,9 @@
+pygame>=2.1
+opencv-python>=4.7
+# 0.10.21 still ships the legacy mp.solutions.pose API used here
+mediapipe==0.10.21
+numpy
+# floor mapping (SegFormer floor model); the game falls back to an estimated floor without it
+onnxruntime
+# GPU-rendered 3D character (OpenGL 3.3, offscreen); falls back to a flat silhouette without it
+moderngl

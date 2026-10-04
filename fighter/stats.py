@@ -21,7 +21,7 @@ breaks the chain. The Fitness Score and grades are a game score built from these
 from __future__ import annotations
 
 import math
-from typing import Dict, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from . import config as C
 
@@ -306,11 +306,20 @@ class FightStats:
     def overall_rank(self, now: Optional[float] = None) -> str:
         return rank(self.performance(now))
 
-    def fitness_score(self, now: Optional[float] = None) -> int:
+    def points(self) -> int:
+        """Points earned during the fight (they only ever go up): hits, dodges, blocks and the best combo."""
         pts = C.SCORE_POINTS
-        score = (self.performance(now) * 40 + self.total_hits * pts["hit"]
-                 + self.enemy_attacks_dodged * pts["dodge"] + self.enemy_attacks_blocked * pts["block"]
-                 + self.best_combo * pts["best_combo"])
+        return (self.total_hits * pts["hit"] + self.enemy_attacks_dodged * pts["dodge"]
+                + self.enemy_attacks_blocked * pts["block"] + self.best_combo * pts["best_combo"])
+
+    def bonuses(self, now: Optional[float] = None) -> List[Tuple[str, int]]:
+        """End-of-fight bonuses added on top of the points, as (label, points)."""
+        pts = C.SCORE_POINTS
+        out = [("PERFORMANCE", int(round(self.performance(now) * 40)))]
         if self.won:
-            score += pts["win"] + self.health_remaining * pts["health"]
+            out += [("VICTORY", pts["win"]), ("HEALTH LEFT", int(round(self.health_remaining * pts["health"])))]
+        return out
+
+    def fitness_score(self, now: Optional[float] = None) -> int:
+        score = self.points() + sum(v for _, v in self.bonuses(now))
         return int(round(score / 10.0)) * 10

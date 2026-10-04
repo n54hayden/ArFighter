@@ -4,17 +4,16 @@ Player distances are in "torso units" (shoulder-midpoint to hip-midpoint length)
 so colliders and speed thresholds scale automatically with distance from the camera.
 Enemy distances are fractions of the enemy's height H.
 """
+import sys
 
 # --- Display -----------------------------------------------------------------
 SCREEN_W = 1280
 SCREEN_H = 720
 FPS = 60
-WINDOW_TITLE = "ARena: Fit Fighter"
+WINDOW_TITLE = "AR Shadow Fighter"
 
 # --- Music -------------------------------------------------------------------
-MUSIC_DIR = "music"               # relative to ar_fighter.py; first .mp3/.ogg/.wav is the fight music
-MENU_MUSIC_DIR = "music/menu"     # first audio file here plays on the main menu
-                                  # (each boss can also have its own theme: see "music" in BOSSES)
+MUSIC_DIR = "music"               # relative to ar_fighter.py; first .mp3/.ogg/.wav is played
 MUSIC_VOLUME = 0.6                # 0.0 - 1.0
 MUSIC_FADE_IN_MS = 500
 MUSIC_FADE_OUT_MS = 1200
@@ -23,36 +22,49 @@ MUSIC_FADE_OUT_MS = 1200
 SFX_DIR = "sound_effects"         # relative to ar_fighter.py
 SFX_VOLUME = 0.9                  # 0.0 - 1.0
 SFX_KEYWORDS = {                  # a file is used for a role if its name contains any keyword
-    "bell": ("bell",),               # (roles are matched in this order and a file only fills one role)
-    "kick": ("kick",),
+    "bell": ("bell",),
     "punch": ("punch", "impact", "hit"),
-    "groan": ("disappoint", "groan", "boo", "aww"),  # defeat; before "cheer" so a "crowd ..." groan isn't the cheer
-    "heartbeat": ("heart",),         # loops while you're on low health
     "cheer": ("cheer", "crowd", "applause"),
     "throw": ("throw", "whoosh", "swish"),
 }
-SFX_POOLED_ROLES = ("punch", "kick", "throw")  # these use every matching file, picking one at random
-
-# --- Readability from across the room (players stand ~8 ft back) ---------------------
-POPUP_TEXT_SCALE = 1.6            # floating combat text ("DUCKED!", "-10", "BLOCK" ...) is drawn this much bigger
-POPUP_TEXT_LIFE_SCALE = 1.3       # ...and stays up this much longer
-CUE_TEXT_SIZE = 84                # the boss's warnings ("JUMP!", "DUCK!", "MOVE!")
-
-# --- Low health -----------------------------------------------------------------------
-LOW_HEALTH_FRACTION = 0.25        # at or below this much health: heartbeat + red pulse at the screen edges
-LOW_HEALTH_BPM = 80               # pulse rate used if the heartbeat sound is missing or muted
 
 # --- Camera / pose thread ----------------------------------------------------
 # On this Mac, index 0 is the iPhone (Continuity Camera) when it's nearby and 1 is the
 # built-in FaceTime camera. With no phone around, the FaceTime camera becomes 0, so
 # the camera thread falls back to 0 when 1 doesn't exist.
-CAMERA_INDEX = 1
+CAMERA_INDEX = 1 if sys.platform == "darwin" else 0  # elsewhere the built-in webcam is 0
 CAMERA_W, CAMERA_H, CAMERA_FPS = 1280, 720, 30
 POSE_INPUT_WIDTH = 640            # frame is downscaled to this before MediaPipe
 POSE_MODEL_COMPLEXITY = 1         # 0 = fastest, 2 = most accurate
 POSE_MIN_DETECTION_CONFIDENCE = 0.5
 POSE_MIN_TRACKING_CONFIDENCE = 0.5
 BACKGROUND_BRIGHTNESS = 0.6       # darken the camera feed for the "shadow" mood
+CAMERA_HFOV_DEG = 65.0            # horizontal field of view of a typical webcam (sets the depth scale)
+PERSON_MASK_THRESHOLD = 0.5       # MediaPipe segmentation value treated as "you" (for occlusion)
+
+# --- Floor mapping -----------------------------------------------------------
+# The shadow fights on one lane: the floor row where you stood during calibration, at your
+# calibrated size, moving only left / right. A SegFormer model (ADE20K classes) marks which
+# pixels are floor; along the lane, the floor ends at walls and furniture, and the shadow
+# can't go past them. See fighter/floor.py.
+FLOOR_MODEL_FILE = "models/segformer-b0-ade.onnx"   # relative to ar_fighter.py; downloaded if missing
+FLOOR_MODEL_URL = "https://huggingface.co/Xenova/segformer-b0-finetuned-ade-512-512/resolve/main/onnx/model.onnx"
+FLOOR_CLASS_IDS = (3, 6, 9, 11, 13, 28, 29, 46, 52, 91, 94, 101)  # floor, road, grass, sidewalk, earth, rug, ...
+FLOOR_MIN_FRACTION = 0.04         # less floor than this (of the image) and the mask is ignored
+FLOOR_MAP_FRAMES = 3              # frames segmented after calibration and averaged (steadier walls)
+FLOOR_MAP_INTERVAL = 1.0          # seconds between those frames
+FLOOR_MIN_LANE = 1.0              # a lane narrower than this many body heights is treated as a bad mask
+FLOOR_EDGE_MARGIN = 0.03          # the shadow never gets closer than this fraction of the width to the screen edge
+FLOOR_HALF_FOOTPRINT = 0.12       # body heights either side of the shadow's centre that must stay inside the walls
+FLOOR_K_MIN = 0.6                 # the floor grid is drawn from your feet back to this scale
+FLOOR_HORIZON_MIN_SPREAD = 0.07   # depth-ratio spread needed before your steps refine the horizon
+FLOOR_GRID_STEP = 0.25            # grid spacing on the floor, in body heights
+FLOOR_GRID_SHOW = 3.5             # seconds the grid and walls are shown after mapping ([D] shows them always)
+FLOOR_GRID_COLOR = (90, 200, 255)
+FLOOR_GRID_ALPHA = 38
+WALL_COLOR = (255, 120, 70)
+WALL_SLAM_SPEED = 0.4            # knocked into a wall faster than this (body heights / s): impact effect
+CONTACT_SHADOW_ALPHA = 120
 
 # --- Tracking ----------------------------------------------------------------
 LANDMARK_VISIBILITY = 0.5         # ignore landmarks below this visibility
@@ -81,9 +93,6 @@ KICK_COOLDOWN = 0.5
 KICK_DAMAGE_MIN = 8
 KICK_DAMAGE_MAX = 16
 LOW_KICK_SPEED_FACTOR = 1.3       # kicks to the boss's feet need this much more speed (so steps don't count)
-THROW_RELEASE_FACTOR = 0.6        # stats: a punch/kick ends once the limb slows below this x its threshold
-KICK_THROW_MIN_LIFT = 0.5         # stats: a missed kick only counts as thrown if the foot rose this many
-                                  # torso units above the other foot (so fast steps aren't kicks)
 
 # --- Player defence ----------------------------------------------------------
 PLAYER_MAX_HP = 100
@@ -109,19 +118,26 @@ ENEMY_GETUP_TIME = 0.6            # ...and getting back up
 ENEMY_KNOCKDOWN_KNOCKBACK = 1.4   # body heights / second
 ENEMY_DODGE_TIME = 0.35           # how long a dodge lasts (can't be hit meanwhile)
 ENEMY_DODGE_SPEED = 2.2           # body heights / second, backward
-ENEMY_ROLL_TIME = 0.6             # backward roll (ninja): duration...
+ENEMY_ROLL_TIME = 0.9             # backward roll (ninja): duration...
 ENEMY_ROLL_SPEED = 1.6            # ...and speed in body heights / second
 ENEMY_KICK_KNOCKBACK = 1.8        # body kick: pushed back (body heights / second) but stays on its feet
-ENEMY_POSE_BLEND = 16.0
+ENEMY_ACCEL = 4.0                 # body heights / second^2 for a boss of mass 1 (heavier = slower to start/stop)
+ENEMY_SIZE_FOLLOW_TAU = 1.0       # seconds: how quickly the shadow matches your size when you step in / back
+ENEMY_SIZE_DEADZONE = 0.05        # ...ignoring size differences smaller than this (tracking noise)
+ENEMY_TURN_TIME = 0.22            # seconds to turn round when you cross over
+ENEMY_HITSTOP = 0.07              # the boss freezes this long when a hit lands (sells the contact)
+FLINCH_STIFFNESS = 140.0          # additive flinch spring: the body snaps away from a hit and recovers
+FLINCH_DAMPING = 14.0
+ANIM_FADE = 0.15                  # default cross-fade between clips (seconds)
+DODGE_HOP_HEIGHT = 0.06           # hop-back dodge apex, in body heights
 
 # --- Bosses (fought in order) -------------------------------------------------
 # dodge_chance / kick_block_chance only apply while the boss is idle or walking,
 # never mid-attack, stunned or knocked down.
 BOSSES = [
     {
-        "name": "NIGHTFIST",
-        "title": "THE NAMELESS BRAWLER",          # shown in the boss intro
-        "music": "music/bosses/shadow",  # optional theme; falls back to the fight music
+        "name": "SHADOW",
+        "mass": 1.0,              # heavier = slower to start and stop, knocked back less
         "max_hp": 200,
         "dodge_chance": 0.10,
         "roll_chance": 0.0,       # fraction of dodges done as a backward roll instead of a hop back
@@ -130,14 +146,13 @@ BOSSES = [
         "attack_speed": 1.0,      # > 1 = faster attacks
         "idle_min": 0.25,         # pause between attacks (shrinks further as the boss gets hurt)
         "idle_max": 0.7,
-        "attack_weights": {"jab": 3.0, "cross": 2.0, "uppercut": 1.5, "high_kick": 1.5, "low_sweep": 2.0},
+        "attack_weights": {"jab": 3.0, "cross": 2.0, "high_kick": 1.5, "side_kick": 1.2, "low_sweep": 1.5},
         "rim": (95, 65, 150),
         "headband": None,
     },
     {
-        "name": "KAID",
-        "title": "THE SILENT BLADE",          # shown in the boss intro
-        "music": "music/bosses/shadow_ninja",  # optional theme; falls back to the fight music
+        "name": "SHADOW NINJA",
+        "mass": 0.8,
         "max_hp": 300,
         "dodge_chance": 0.55,
         "roll_chance": 0.6,
@@ -146,15 +161,14 @@ BOSSES = [
         "attack_speed": 1.1,
         "idle_min": 0.25,
         "idle_max": 0.6,
-        "attack_weights": {"jab": 2.0, "cross": 2.0, "uppercut": 1.5, "high_kick": 1.5, "low_sweep": 1.5,
+        "attack_weights": {"jab": 2.0, "cross": 2.0, "high_kick": 1.5, "front_kick": 1.2, "low_sweep": 1.2,
                            "throwing_star": 3.0},
         "rim": (170, 40, 55),
         "headband": (200, 30, 40),
     },
     {
-        "name": "IRON LOTUS",
-        "title": "MASTER OF THE IRON STAFF",          # shown in the boss intro
-        "music": "music/bosses/ninja_monk",  # optional theme; falls back to the fight music
+        "name": "NINJA MONK",
+        "mass": 1.0,
         "max_hp": 400,
         "dodge_chance": 0.35,
         "roll_chance": 0.3,
@@ -163,16 +177,15 @@ BOSSES = [
         "attack_speed": 1.1,
         "idle_min": 0.25,
         "idle_max": 0.6,
-        "attack_weights": {"staff_swipe": 2.5, "staff_ground": 2.0, "staff_high": 2.0, "staff_poke": 2.0,
+        "attack_weights": {"staff_swipe": 2.5, "staff_ground": 2.0, "staff_lunge": 2.0,
                            "high_kick": 1.0},
         "rim": (235, 150, 40),
         "headband": None,
         "staff": True,            # fights with a staff (arms hold it; it has its own hitbox)
     },
     {
-        "name": "ANUBIS",
-        "title": "GUARDIAN OF THE SANDS",          # shown in the boss intro
-        "music": "music/bosses/egyptian_soldier",  # optional theme; falls back to the fight music
+        "name": "EGYPTIAN SOLDIER",
+        "mass": 1.25,
         "max_hp": 160,            # the least health, but the hardest hitter
         "dodge_chance": 0.25,
         "roll_chance": 0.0,
@@ -190,9 +203,8 @@ BOSSES = [
         "player_shield": True,    # you get a shield on your left arm for this fight
     },
     {
-        "name": "MALAKAR",
-        "title": "THE ARCANE WARDEN",          # shown in the boss intro
-        "music": "music/bosses/mage",  # optional theme; falls back to the fight music
+        "name": "MAGE",
+        "mass": 0.9,
         "max_hp": 260,
         "dodge_chance": 0.15,
         "roll_chance": 0.0,
@@ -275,56 +287,7 @@ STAR_THROW_DISTANCE = 0.38        # boss backs off to this fraction of the scree
 
 # --- Flow ---------------------------------------------------------------------
 COUNTDOWN_SECONDS = 3
-SUMMARY_DELAY = 3.2               # seconds of K.O. / result banner before the Fight Summary appears
-SUMMARY_TALLY_TIME = 0.9          # numbers on the Fight Summary count up over this long
-
-# --- Boss intro (before the 3-2-1 countdown) ------------------------------------
-INTRO_WARNING_TIME = 1.4          # flashing WARNING / "<BOSS> APPROACHING"
-INTRO_TITLE_TIME = 1.6            # boss name and title (he walks in during both)
-
-# --- Combos --------------------------------------------------------------------
-COMBO_WINDOW = 1.5                # seconds allowed between landed hits to keep a combo going
-COMBO_WORDS = (                   # (minimum hits, shout, colour), best match first
-    (5, "UNSTOPPABLE!", (255, 120, 60)),
-    (4, "AMAZING!", (255, 220, 120)),
-    (3, "GREAT!", (120, 255, 160)),
-    (2, "NICE!", (255, 255, 255)),
-)
-
-# --- Dramatic K.O. ----------------------------------------------------------------
-KO_HITSTOP = 0.12                 # the world freezes for this long on the finishing blow...
-KO_SLOWMO_TIME = 1.1              # ...then runs in slow motion until this many seconds after it
-KO_SLOWMO_SCALE = 0.3
-ENEMY_DEATH_FADE_START = 1.2      # the K.O.'d boss lies still this long (game seconds)...
-ENEMY_DEATH_FADE_TIME = 0.8       # ...then fades away over this long
-
-# --- Fitness score (a game score built from your fight stats) -------------------
-SCORE_WEIGHTS = {"accuracy": 0.30, "dodging": 0.30, "activity": 0.25, "combos": 0.15}
-SCORE_ACTIVITY_TARGET = 30.0      # punches + kicks + dodges per minute that earns 100 for Activity
-SCORE_COMBO_TARGET = 6            # best combo that earns 100 for Combos
-SCORE_RANKS = ((90, "S"), (80, "A"), (65, "B"), (50, "C"), (0, "D"))
-SCORE_POINTS = {                  # Fitness Score = performance x 40 + these per stat
-    "hit": 50, "dodge": 100, "block": 40, "best_combo": 80,
-    "win": 1500, "health": 1000,  # win bonus, plus up to 1000 for health left (wins only)
-}
-
-# --- Fight Summary calorie estimate (rough: no body weight is measured) -------------
-CALORIE_MET = 6.0                 # metabolic equivalent for active fitness boxing
-CALORIE_WEIGHT_KG = 70.0          # assumed body weight
-LEADERBOARD_FILE = "leaderboard.json"  # Fitness Score top 10 (next to ar_fighter.py)
-LEADERBOARD_SIZE = 10
-LEADERBOARD_NAME_LEN = 3          # arcade-style initials
-LEADERBOARD_SEED = [              # starting board when there's no saved one (delete leaderboard.json to reset)
-    {"name": "ACE", "score": 11860, "boss": "MALAKAR", "rank": "S"},
-    {"name": "KJT", "score": 10940, "boss": "ANUBIS", "rank": "A"},
-    {"name": "MIA", "score": 9820, "boss": "IRON LOTUS", "rank": "A"},
-    {"name": "DEV", "score": 9150, "boss": "MALAKAR", "rank": "B"},
-    {"name": "RYU", "score": 8430, "boss": "KAID", "rank": "A"},
-    {"name": "BEN", "score": 7610, "boss": "IRON LOTUS", "rank": "B"},
-    {"name": "TAZ", "score": 6980, "boss": "KAID", "rank": "B"},
-    {"name": "SAM", "score": 5720, "boss": "NIGHTFIST", "rank": "C"},
-    {"name": "LEE", "score": 4950, "boss": "NIGHTFIST", "rank": "D"},
-]
+NEXT_BOSS_DELAY = 3.5             # seconds of celebration before the next boss's countdown
 SAVE_FILE = "save_data.json"      # remembers the furthest boss you've reached (next to ar_fighter.py)
 
 # --- Colours -----------------------------------------------------------------
@@ -335,3 +298,4 @@ ENEMY_EYES = (230, 235, 255)
 ENEMY_EYES_ANGRY = (255, 70, 40)
 PLAYER_BAR = (70, 200, 255)
 ENEMY_BAR = (200, 60, 230)
+CHARACTER_FILE = "assets/character/fighter.npz"  # baked by tools/build_character.py (see ASSETS.md)

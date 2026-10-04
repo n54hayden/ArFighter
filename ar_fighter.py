@@ -34,6 +34,7 @@ from pathlib import Path
 
 import pygame
 
+from fighter import arcade
 from fighter import config as C
 from fighter.audio import Music
 from fighter.sfx import SoundEffects
@@ -98,22 +99,29 @@ class Game:
         except pygame.error:  # e.g. no GPU renderer available
             self.screen = pygame.display.set_mode(self.size)
         self.world = pygame.Surface(self.size).convert()
-        self._veil = pygame.Surface(self.size).convert()  # black, for dimming behind the menu
+        self._veil = pygame.Surface(self.size).convert()  # cabinet black, for dimming behind the menu
+        self._veil.fill(arcade.INK)
         self._tint = pygame.Surface(self.size).convert()  # red, for the boss intro's WARNING
         self._tint.fill((150, 0, 0))
         self._vignette = make_vignette(self.size, (200, 0, 0))  # low-health pulse at the screen edges
         self.low_health = 0.0         # 0 = fine; >0 = how close to death (0..1) while at or below LOW_HEALTH_FRACTION
         self.pacer = FramePacer(C.FPS)
 
-        self.font_small = pygame.font.Font(None, 22)
-        self.font = pygame.font.Font(None, 32)
-        self.font_big = pygame.font.Font(None, 96)
-        self.font_menu = pygame.font.Font(None, 44)
-        self.font_huge = pygame.font.Font(None, 150)
-        self.font_stat = pygame.font.Font(None, 76)
-        self.font_row = pygame.font.Font(None, 30)
-        self.font_rank = pygame.font.Font(None, 120)
-        self.font_grade = pygame.font.Font(None, 62)
+        # Arcade type: Press Start 2P ('pixel') for titles, numbers and buttons, VT323 ('term') for reading text.
+        self.font_tiny = arcade.term(24)
+        self.font_small = arcade.term(26)
+        self.font = arcade.term(32)
+        self.font_row = arcade.term(30)
+        self.font_label = arcade.pixel(12)
+        self.font_menu = arcade.pixel(16)
+        self.font_head = arcade.pixel(22)
+        self.font_grade = arcade.pixel(28)
+        self.font_stat = arcade.pixel(32)
+        self.font_big = arcade.pixel(44)
+        self.font_huge = arcade.pixel(64)
+        self.font_rank = arcade.pixel(80)
+        self.font_title = arcade.pixel(104)
+        self.font_count = arcade.pixel(128)
 
         self.camera = CameraThread(self.size, camera_index, complexity)
         self.camera.start()
@@ -240,16 +248,16 @@ class Game:
         opens a page listing every boss so you can fight any of them directly.
         """
         if self.menu_page == "bosses":
-            return [(f"{i + 1}.  {b['name'].title()}", f"boss:{i}") for i, b in enumerate(C.BOSSES)] + \
-                   [("Back", "back")]
+            return [(f"{i + 1}  {b['name']}", f"boss:{i}") for i, b in enumerate(C.BOSSES)] + \
+                   [("BACK", "back")]
         if self.menu_page == "leaderboard":
-            return [("Back", "back")]
+            return [("BACK", "back")]
         items = []
         if self.checkpoint > 0:
             nxt = C.BOSSES[self.checkpoint]
-            items.append((f"Continue: Round {self.checkpoint + 1} - {nxt['name'].title()}", "continue"))
-        items.append(("New Game" if self.checkpoint > 0 else "Start Game", "new"))
-        items += [("Select Boss", "select"), ("Leaderboard", "leaderboard"), ("Quit", "quit")]
+            items.append((f"CONTINUE: {nxt['name']}", "continue"))
+        items.append(("NEW GAME" if self.checkpoint > 0 else "START", "new"))
+        items += [("SELECT BOSS", "select"), ("HIGH SCORES", "leaderboard"), ("QUIT", "quit")]
         return items
 
     def _menu_select(self, index: int) -> None:
@@ -274,8 +282,8 @@ class Game:
         """(label, action) pairs for the buttons under the Fight Summary."""
         items = []
         if self.result == "VICTORY":
-            items.append((f"Next: {C.BOSSES[self.boss_index + 1]['name'].title()}", "next"))
-        return items + [("Fight Again", "again"), ("Select Boss", "select"), ("Main Menu", "menu")]
+            items.append((f"NEXT: {C.BOSSES[self.boss_index + 1]['name']}", "next"))
+        return items + [("REMATCH", "again"), ("PICK BOSS", "select"), ("MENU", "menu")]
 
     def _summary_select(self, index: int) -> None:
         action = self._summary_items()[index][1]
@@ -962,137 +970,155 @@ class Game:
             self._draw_summary()
         else:
             self._draw_hud()
+        if self.mode in (MODE_MENU, MODE_SUMMARY, MODE_INTRO):
+            arcade.scanlines(self.screen)
         pygame.display.flip()
 
     def _dim(self, alpha: int) -> None:
         self._veil.set_alpha(alpha)
         self.screen.blit(self._veil, (0, 0))
 
+    # --- arcade cabinet screens ------------------------------------------------------------
+    def _top_bar(self) -> None:
+        """1UP / HI-SCORE / FREE PLAY across the top, like a cabinet attract screen."""
+        w = self.size[0]
+        A, t = arcade, time.perf_counter()
+        if int(t * 2) % 2 == 0:
+            A.text(self.screen, "1UP", (40, 16), self.font_label, A.RED)
+        A.text(self.screen, "HI-SCORE", (w / 2, 16), self.font_label, A.RED, "midtop")
+        best = self.leaderboard.entries[0] if self.leaderboard.entries else None
+        if best is not None:
+            A.text(self.screen, f"{best['score']:,}  {best['name']}", (w / 2, 36), self.font_menu, A.WHITE, "midtop")
+        A.text(self.screen, "FREE PLAY", (w - 40, 16), self.font_label, A.CYAN, "topright")
+
     def _draw_menu(self) -> None:
         w, h = self.size
-        self._dim(170)
-        self._draw_logo((w / 2, h * 0.17))
-        self._text("Your body is the controller.  Every fight is a workout.", (w / 2, h * 0.28), self.font,
-                   (200, 190, 230), "center")
-
+        A, t = arcade, time.perf_counter()
+        self._dim(205)
+        self._top_bar()
         self.menu_rects = []
         items = self._menu_items()
-        sub_page = self.menu_page != "main"  # boss list or leaderboard: no tips, Esc goes back
-        if self.menu_page == "bosses":
-            self._text("Select a boss", (w / 2, h * 0.345), self.font_menu, (255, 220, 120), "center")
-            top = h * 0.44
-        elif self.menu_page == "leaderboard":
-            self._text("TOP 10 FITNESS SCORES", (w / 2, h * 0.345), self.font_menu, (255, 220, 120), "center")
-            self._draw_board(h * 0.40)
-            top = h * 0.88
+        sub_page = self.menu_page != "main"  # boss list or high scores: compact logo, Esc goes back
+        if not sub_page:
+            self._draw_logo((w / 2, 150))
+            A.text(self.screen, "YOUR BODY IS THE CONTROLLER.  EVERY ROUND IS A WORKOUT.", (w / 2, 274),
+                   self.font, A.DIM, "center")
+            top, gap = 326, 54
         else:
-            top = h * 0.37
-        gap = 60
-        bw = max(340, max(self.font_menu.size(label)[0] for label, _ in items) + 60)  # fit the longest label
+            A.text(self.screen, "ARENA: FIT FIGHTER", (w / 2, 96), self.font_stat, A.YELLOW, "center", shadow=A.MAGENTA)
+            if self.menu_page == "bosses":
+                A.text(self.screen, "CHOOSE YOUR OPPONENT", (w / 2, 158), self.font_head, A.CYAN, "center")
+                top, gap = 222, 60
+            else:
+                A.text(self.screen, "HIGH SCORES", (w / 2, 158), self.font_head, A.CYAN, "center")
+                self._draw_board(200)
+                top, gap = 618, 60
         for i, (label, _) in enumerate(items):
-            rect = pygame.Rect(0, 0, bw, 52)
+            rect = pygame.Rect(0, 0, 470, 46)
             rect.center = (w // 2, int(top) + i * gap)
             self._button(rect, label, i == self.menu_index)
             self.menu_rects.append(rect)
 
-        tips = [
-            "Stand about 6 ft (2 m) back with your whole body in view.",
-            "Punch and kick sideways at the boss.  Raise your forearms to block.",
-            "Jump over low sweeps.  Duck under throwing stars.  Step back to get out of range.",
-            "Parry staff and sword.  Dodge Malakar's spells, then punish him.  Beat all five bosses!",
-        ]
-        tips_y = self.menu_rects[-1].bottom + 36  # always below the last button
-        for i, tip in enumerate([] if sub_page else tips):
-            self._text(tip, (w / 2, tips_y + i * 30), self.font, (210, 210, 220), "center")
-        self._text("Up/Down + Enter or click    [M] mute    [F] fullscreen    "
-                   + ("[Esc] back" if sub_page else "[Esc] quit"),
-                   (w / 2, h - 30), self.font_small, (170, 170, 185), "center")
+        if not sub_page:
+            tips = ["STAND ABOUT 6 FT BACK, WHOLE BODY IN VIEW.  PUNCH & KICK AT THE BOSS, ARMS UP TO BLOCK.",
+                    "JUMP THE LOW SWEEPS.  DUCK THE STARS.  STEP BACK TO GET OUT OF REACH."]
+            for i, tip in enumerate(tips):
+                A.text(self.screen, tip, (w / 2, 612 + i * 26), self.font_small, A.WHITE, "center")
+            if int(t * 1.6) % 2 == 0:
+                A.text(self.screen, "PRESS ENTER TO SWEAT", (w / 2, 676), self.font_menu, A.YELLOW, "center")
+        hint = "UP/DOWN + ENTER (OR CLICK)    M MUTE    F FULLSCREEN    " + ("ESC BACK" if sub_page else "ESC QUIT")
+        A.text(self.screen, hint, (w / 2, h - 12), self.font_tiny, A.DIM, "midbottom")
         if self.camera.error:
-            self._text(f"Camera error: {self.camera.error}", (w / 2, h - 60), self.font_small, (255, 90, 90),
-                       "center")
+            A.text(self.screen, f"CAMERA ERROR: {self.camera.error}", (w / 2, h - 36), self.font_small, A.RED,
+                   "midbottom")
 
     def _draw_logo(self, center) -> None:
-        """'ARena: Fit Fighter' with the AR picked out."""
-        parts = [("AR", (120, 200, 255)), ("ena: Fit Fighter", (235, 225, 255))]
-        surfs = [(self.font_huge.render(t, True, c), self.font_huge.render(t, True, (0, 0, 0))) for t, c in parts]
-        x = center[0] - sum(s.get_width() for s, _ in surfs) / 2
-        for fg, shadow in surfs:
-            rect = fg.get_rect(midleft=(x, center[1]))
-            self.screen.blit(shadow, rect.move(3, 3))
-            self.screen.blit(fg, rect)
-            x += fg.get_width()
+        """Big extruded 'ARENA' (AR picked out) over 'FIT FIGHTER', with a slapped-on sticker."""
+        A = arcade
+        cx, cy = center
+        word = [("AR", A.CYAN), ("ENA", A.YELLOW)]
+        width = sum(self.font_title.size(s)[0] for s, _ in word)
+        x = cx - width / 2
+        for s, color in word:
+            for k in range(8, 0, -1):  # chunky 3D extrude, darker the further back
+                shade = tuple(int(c * (0.35 + 0.05 * (8 - k))) for c in A.MAGENTA)
+                self.screen.blit(self.font_title.render(s, False, shade), (x + k, cy - 52 + k))
+            self.screen.blit(self.font_title.render(s, False, color), (x, cy - 52))
+            x += self.font_title.size(s)[0]
+        A.text(self.screen, "FIT FIGHTER", (cx, cy + 78), self.font_big, A.WHITE, "center", shadow=A.MAGENTA, depth=5)
+        A.sticker(self.screen, "NO CONTROLLER NEEDED!", (cx + width / 2 + 60, cy - 44), self.font_label,
+                  angle=-9 + 1.5 * math.sin(time.perf_counter() * 3))
 
     def _draw_board(self, top: float, highlight=None) -> None:
-        """The leaderboard table (best first); `highlight` is a 1-based row to light up."""
+        """High-score table (best first), each place in its own colour; `highlight` (1-based) blinks."""
+        A, t = arcade, time.perf_counter()
         w = self.size[0]
         entries = self.leaderboard.entries
         if not entries:
-            self._text("No scores yet: win a fight to get on the board!", (w / 2, top + 60), self.font,
-                       (200, 190, 230), "center")
+            A.text(self.screen, "NO SCORES YET.  BE THE FIRST!", (w / 2, top + 80), self.font_menu, A.WHITE, "center")
             return
-        x0, x1, row_h = w / 2 - 330, w / 2 + 330, 30
-        cols = ((x0 + 20, "midleft"), (x0 + 90, "midleft"), (x0 + 340, "midright"), (x0 + 400, "center"),
-                (x1 - 20, "midright"))
-        for (cx, anchor), label in zip(cols, ("#", "NAME", "SCORE", "RANK", "BOSS")):
-            self._text(label, (cx, top), self.font_small, (170, 170, 185), anchor)
+        x0 = w / 2 - 360
+        cols = ((x0, "midleft"), (x0 + 120, "midleft"), (x0 + 400, "midright"), (x0 + 470, "center"),
+                (x0 + 720, "midright"))
+        for (cx, anchor), label in zip(cols, ("RANK", "NAME", "SCORE", "GRADE", "BOSS")):
+            A.text(self.screen, label, (cx, top), self.font_label, A.DIM, anchor)
         for i, e in enumerate(entries):
-            y = top + 28 + i * row_h
+            y = top + 34 + i * 34
+            color = A.ROW_COLORS[min(i, len(A.ROW_COLORS) - 1)]
             if highlight == i + 1:
-                pygame.draw.rect(self.screen, (120, 70, 200), (x0, y - row_h / 2 + 1, x1 - x0, row_h - 2),
-                                 border_radius=6)
-            color = (255, 220, 120) if i == 0 else (255, 255, 255)
-            values = (f"{i + 1}.", e["name"], f"{e['score']:,}", e["rank"], e["boss"].title())
+                pygame.draw.rect(self.screen, A.PANEL, (x0 - 16, y - 16, 752, 32))
+                color = A.WHITE if int(t * 6) % 2 == 0 else A.YELLOW
+            values = (A.ordinal(i + 1), e["name"], f"{e['score']:,}", e["rank"], e["boss"])
             for j, ((cx, anchor), v) in enumerate(zip(cols, values)):
-                self._text(v, (cx, y), self.font_row, RANK_COLORS.get(v, color) if j == 3 else color, anchor)
+                A.text(self.screen, v, (cx, y), self.font_menu if j < 4 else self.font_label, color, anchor)
 
     def _draw_popup(self) -> None:
-        """Over the summary: type your initials, then see where you landed on the board."""
+        """Over the results: type your initials, then see where you landed on the high-score table."""
         popup = self._summary_popup()
         if popup not in ("entry", "board"):
             return
+        A = arcade
         w, h = self.size
-        self.menu_rects = []  # the summary buttons are covered
-        self._dim(150)
-        box = pygame.Rect(0, 0, 760 if popup == "board" else 600, 470 if popup == "board" else 360)
+        self.menu_rects = []  # the results buttons are covered
+        self._dim(170)
+        box = pygame.Rect(0, 0, 820 if popup == "board" else 640, 500 if popup == "board" else 380)
         box.center = (w // 2, h // 2)
-        pygame.draw.rect(self.screen, (40, 34, 56), box, border_radius=16)
-        pygame.draw.rect(self.screen, (255, 220, 120), box, 3, border_radius=16)
+        A.panel(self.screen, box, A.YELLOW)
         if popup == "board":
-            self._text("LEADERBOARD", (w / 2, box.top + 36), self.font_menu, (255, 220, 120), "center")
-            self._draw_board(box.top + 80, self.board_pos)
-            self._text(f"You placed #{self.board_pos}!   [Enter] continue", (w / 2, box.bottom - 24),
-                       self.font_small, (200, 200, 210), "center")
+            A.text(self.screen, "HIGH SCORES", (w / 2, box.top + 40), self.font_head, A.CYAN, "center")
+            self._draw_board(box.top + 82, self.board_pos)
+            if int(self.summary_t * 2) % 2 == 0:
+                A.text(self.screen, f"YOU PLACED {A.ordinal(self.board_pos)}!   PRESS ENTER", (w / 2, box.bottom - 30),
+                       self.font_label, A.WHITE, "center")
             return
         score = self.stats.fitness_score()
         place = self.leaderboard.position(score)
-        self._text("NEW HIGH SCORE!", (w / 2, box.top + 42), self.font_menu, (255, 220, 120), "center")
-        self._text(f"{score:,}", (w / 2, box.top + 100), self.font_stat, (255, 255, 255), "center")
-        self._text(f"#{place} on the leaderboard  -  enter your initials", (w / 2, box.top + 150), self.font,
-                   (200, 190, 230), "center")
+        A.text(self.screen, "NEW HIGH SCORE!", (w / 2, box.top + 48), self.font_head, A.rainbow(self.summary_t),
+               "center")
+        A.text(self.screen, f"{score:,}", (w / 2, box.top + 108), self.font_stat, A.WHITE, "center")
+        A.text(self.screen, f"THAT'S {A.ordinal(place)} PLACE.  ENTER YOUR INITIALS:", (w / 2, box.top + 160),
+               self.font, A.CYAN, "center")
         n = C.LEADERBOARD_NAME_LEN
         blink = int(self.summary_t * 3) % 2 == 0
         for i in range(n):
-            slot = pygame.Rect(0, 0, 76, 92)
-            slot.center = (int(w / 2 + (i - (n - 1) / 2) * 96), box.top + 232)
-            active = i == len(self.name_entry)
-            pygame.draw.rect(self.screen, (20, 18, 30), slot, border_radius=10)
-            pygame.draw.rect(self.screen, (220, 200, 255) if active and blink else (90, 80, 120), slot, 3,
-                             border_radius=10)
+            cx, cy = int(w / 2 + (i - (n - 1) / 2) * 110), box.top + 245
             if i < len(self.name_entry):
-                self._text(self.name_entry[i], slot.center, self.font_big, (255, 255, 255), "center")
-        self._text("Type letters   [Backspace] erase   [Enter] save   [Esc] skip", (w / 2, box.bottom - 26),
-                   self.font_small, (200, 200, 210), "center")
+                A.text(self.screen, self.name_entry[i], (cx, cy), self.font_big, A.YELLOW, "center")
+            active = i == len(self.name_entry)
+            if not active or blink:
+                pygame.draw.rect(self.screen, A.YELLOW if active else A.WHITE, (cx - 34, cy + 36, 68, 8))
+        A.text(self.screen, "TYPE LETTERS    BACKSPACE ERASE    ENTER SAVE    ESC SKIP", (w / 2, box.bottom - 28),
+               self.font_small, A.DIM, "center")
 
     def _button(self, rect: pygame.Rect, label: str, selected: bool) -> None:
-        pygame.draw.rect(self.screen, (120, 70, 200) if selected else (40, 34, 56), rect, border_radius=12)
-        pygame.draw.rect(self.screen, (220, 200, 255) if selected else (90, 80, 120), rect, 3, border_radius=12)
-        self._text(label, rect.center, self.font_menu, (255, 255, 255), "center")
+        arcade.button(self.screen, rect, label, selected, time.perf_counter(), self.font_menu)
 
     def _draw_summary(self) -> None:
-        """Workout report: stats on the left, Fitness Score / grades / rank on the right. Numbers count up."""
+        """Results screen: workout and fight stats, the score tally, grades and a rank stamp. Numbers count up."""
+        A = arcade
         w, h = self.size
         s = self.stats
-        self._dim(215)
+        self._dim(225)
         k = min(1.0, self.summary_t / C.SUMMARY_TALLY_TIME)
         k = 1.0 - (1.0 - k) ** 3  # ease out: numbers race up, then settle
 
@@ -1102,112 +1128,114 @@ class Game:
         def pct(v) -> str:
             return f"{round(v * k)}%"
 
-        def grade(v):  # green / gold / orange for good / ok / poor percentages
-            return (120, 255, 160) if v >= 70 else (255, 220, 120) if v >= 40 else (255, 150, 90)
+        def grade(v):  # good / ok / poor percentages
+            return A.LIME if v >= 70 else A.YELLOW if v >= 40 else A.ORANGE
 
-        title, color = {"VICTORY": ("VICTORY", (120, 255, 160)), "CHAMPION": ("CHAMPION!", (255, 220, 90))} \
-            .get(s.result, ("DEFEAT", (255, 90, 90)))
-        self._text("WORKOUT COMPLETE", (w / 2, 30), self.font_menu, (255, 220, 120), "center")
-        self._text(title, (w / 2, 84), self.font_big, color, "center")
-        who = "BOSS DEFEATED" if s.won else "DEFEATED BY"
+        title, color = {"VICTORY": ("STAGE CLEAR!", A.LIME), "CHAMPION": ("CHAMPION!", A.YELLOW)} \
+            .get(s.result, ("GAME OVER", A.RED))
+        A.text(self.screen, title, (w / 2, 44), self.font_big, color, "center", shadow=A.MAGENTA, depth=5)
         boss_title = next((b.get("title", "") for b in C.BOSSES if b["name"] == s.boss_name), "")
-        self._text(f"{who}:  {s.boss_name}" + (f"  -  {boss_title}" if boss_title else ""), (w / 2, 136),
-                   self.font, (200, 190, 230), "center")
+        A.text(self.screen, f"VS {s.boss_name}" + (f"  -  {boss_title}" if boss_title else ""), (w / 2, 92),
+               self.font, A.DIM, "center")
+        line = A.coach_line(s)
+        cw = self.font_label.size("COACH:")[0] + 16 + self.font.size(line)[0]
+        x = w / 2 - cw / 2
+        A.text(self.screen, "COACH:", (x, 128), self.font_label, A.MAGENTA, "midleft")
+        A.text(self.screen, line, (x + self.font_label.size("COACH:")[0] + 16, 128), self.font, A.WHITE, "midleft")
 
-        top, ph = 160, 432
-        purple, gold, dim_white = (220, 200, 255), (255, 220, 120), (210, 210, 220)
+        top, ph = 158, 432
 
-        def panel(x, pw, heading, heading_color):
+        def box(x, pw, heading, border):
             rect = pygame.Rect(x, top, pw, ph)
-            pygame.draw.rect(self.screen, (40, 34, 56), rect, border_radius=12)
-            pygame.draw.rect(self.screen, (90, 80, 120), rect, 3, border_radius=12)
-            self._text(heading, (rect.centerx, rect.top + 28), self.font_menu, heading_color, "center")
+            A.panel(self.screen, rect, border)
+            A.text(self.screen, heading, (rect.centerx, rect.top + 30), self.font_menu, border, "center")
             return rect
 
-        def rows(rect, items):
-            y = rect.top + 72
+        def rows(rect, items, y0=64, step=34):
+            y = rect.top + y0
             for label, value, value_color in items:
-                self._text(label, (rect.left + 22, y), self.font_row, dim_white, "midleft")
-                self._text(value, (rect.right - 22, y), self.font_row, value_color, "midright")
-                y += 33
+                lw = self.font_row.size(label)[0]
+                vw = self.font_row.size(value)[0]
+                dots = "." * max(2, int((rect.width - 52 - lw - vw) / self.font_row.size(".")[0]))
+                A.text(self.screen, label, (rect.left + 24, y), self.font_row, A.WHITE, "midleft")
+                A.text(self.screen, dots, (rect.left + 28 + lw, y), self.font_row, (70, 64, 110), "midleft", shadow=None)
+                A.text(self.screen, value, (rect.right - 24, y), self.font_row, value_color, "midright")
+                y += step
 
-        dur = s.duration()
-        r = panel(48, 390, "WORKOUT", (255, 140, 40))
+        r = box(36, 390, "WORKOUT", A.ORANGE)
         rows(r, [
-            ("Time", format_duration(dur * k), (255, 255, 255)),
-            ("Punches thrown", num(s.punches_thrown), purple),
-            ("Punches landed", num(s.punches_landed), purple),
-            ("Punch accuracy", pct(s.punch_accuracy), grade(s.punch_accuracy)),
-            ("Kicks thrown", num(s.kicks_thrown), purple),
-            ("Kicks landed", num(s.kicks_landed), purple),
-            ("Kick accuracy", pct(s.kick_accuracy), grade(s.kick_accuracy)),
-            ("Best combo", f"x{num(s.best_combo)}", gold),
-            ("Estimated calories", f"{num(s.calories())} kcal", gold),
+            ("TIME", format_duration(s.duration() * k), A.WHITE),
+            ("PUNCHES THROWN", num(s.punches_thrown), A.CYAN),
+            ("PUNCHES LANDED", num(s.punches_landed), A.CYAN),
+            ("PUNCH ACCURACY", pct(s.punch_accuracy), grade(s.punch_accuracy)),
+            ("KICKS THROWN", num(s.kicks_thrown), A.CYAN),
+            ("KICKS LANDED", num(s.kicks_landed), A.CYAN),
+            ("KICK ACCURACY", pct(s.kick_accuracy), grade(s.kick_accuracy)),
+            ("BEST COMBO", f"x{num(s.best_combo)}", A.YELLOW),
+            ("EST. CALORIES", f"{num(s.calories())} KCAL", A.YELLOW),
         ])
-        self._text(f"Calories: rough estimate, assumes {C.CALORIE_WEIGHT_KG:.0f} kg", (r.centerx, r.bottom - 20),
-                   self.font_small, (150, 145, 170), "center")
+        A.text(self.screen, f"KCAL IS A ROUGH GUESS (ASSUMES {C.CALORIE_WEIGHT_KG:.0f} KG)",
+               (r.centerx, r.bottom - 26), self.font_tiny, A.DIM, "center")
 
         health = s.health_remaining * 100
-        r = panel(452, 390, "COMBAT", (70, 200, 255))
+        r = box(444, 390, "FIGHT", A.CYAN)
         rows(r, [
-            ("Total hits", num(s.total_hits), gold),
-            ("Damage dealt", num(s.damage_dealt), purple),
-            ("Attacks faced", num(s.enemy_attacks_faced), purple),
-            ("Attacks dodged", num(s.enemy_attacks_dodged), (120, 255, 160)),
-            ("Blocked", num(s.enemy_attacks_blocked), (140, 210, 255)),
-            ("Hit by", num(s.enemy_attacks_hit), (255, 90, 90)),
-            ("Dodge rate", pct(s.dodge_rate), grade(s.dodge_rate)),
-            ("Longest dodge streak", num(s.longest_dodge_streak), (120, 255, 160)),
-            ("Damage taken", num(s.damage_taken), (255, 90, 90)),
-            ("Health remaining", pct(health), grade(health)),
-        ])
+            ("TOTAL HITS", num(s.total_hits), A.YELLOW),
+            ("DAMAGE DEALT", num(s.damage_dealt), A.CYAN),
+            ("ATTACKS FACED", num(s.enemy_attacks_faced), A.CYAN),
+            ("DODGED", num(s.enemy_attacks_dodged), A.LIME),
+            ("BLOCKED", num(s.enemy_attacks_blocked), A.CYAN),
+            ("GOT HIT", num(s.enemy_attacks_hit), A.RED),
+            ("DODGE RATE", pct(s.dodge_rate), grade(s.dodge_rate)),
+            ("BEST DODGE STREAK", num(s.longest_dodge_streak), A.LIME),
+            ("DAMAGE TAKEN", num(s.damage_taken), A.RED),
+            ("HEALTH LEFT", pct(health), grade(health)),
+        ], step=33)
 
-        r = panel(856, 376, "FITNESS SCORE", gold)
-        self._text(num(s.fitness_score()), (r.centerx, r.top + 84), self.font_stat, (255, 255, 255), "center")
+        r = box(852, 392, "SCORE", A.YELLOW)
+        tally = [("POINTS", num(s.points()), A.WHITE)] + [(label, f"+{num(v)}", A.LIME) for label, v in s.bonuses()]
+        if not s.won:  # show what a win would have added
+            tally.append(("WIN BONUS", "--", A.DIM))
+        rows(r, tally, y0=62, step=30)
+        y = r.top + 62 + 30 * len(tally) + 2
+        pygame.draw.line(self.screen, A.YELLOW, (r.left + 24, y), (r.right - 24, y), 3)
+        A.text(self.screen, "TOTAL", (r.left + 24, y + 30), self.font_label, A.YELLOW, "midleft")
+        A.text(self.screen, num(s.fitness_score()), (r.right - 24, y + 30), self.font_stat, A.YELLOW, "midright")
         cats = s.category_scores()
-        for i, (key, label) in enumerate((("accuracy", "ACCURACY"), ("dodging", "DODGING"),
-                                          ("activity", "ACTIVITY"), ("combos", "COMBOS"))):
-            cx = r.left + r.width * (0.27 if i % 2 == 0 else 0.73)
-            cy = r.top + 150 + (i // 2) * 72
+        gy = r.top + 286
+        for i, (key, label) in enumerate((("accuracy", "ACC"), ("dodging", "DODGE"), ("activity", "MOVE"),
+                                          ("combos", "COMBO"))):
+            cx = r.left + 52 + i * 96
             letter = rank(cats[key])
-            self._text(letter, (cx, cy), self.font_grade, RANK_COLORS[letter], "center")
-            self._text(label, (cx, cy + 30), self.font_small, dim_white, "center")
-        perf = s.performance()
-        bar = pygame.Rect(r.left + 22, r.top + 296, r.width - 44, 18)
-        self._text("PERFORMANCE", (bar.left, bar.top - 14), self.font_small, dim_white, "midleft")
-        self._text(f"{round(perf * k)}", (bar.right, bar.top - 14), self.font_small, (255, 255, 255), "midright")
-        pygame.draw.rect(self.screen, (20, 20, 28), bar.inflate(6, 6), border_radius=6)
+            A.text(self.screen, letter, (cx, gy), self.font_grade, RANK_COLORS[letter], "center")
+            A.text(self.screen, label, (cx, gy + 28), self.font_tiny, A.DIM, "center")
         overall = s.overall_rank()
-        fill = bar.copy()
-        fill.width = int(bar.width * perf / 100 * k)
-        if fill.width > 0:
-            pygame.draw.rect(self.screen, RANK_COLORS[overall], fill, border_radius=4)
-        self._text("OVERALL RANK", (r.centerx, r.top + 340), self.font_small, dim_white, "center")
+        A.text(self.screen, "RANK", (r.left + 40, r.bottom - 54), self.font_menu, A.WHITE, "midleft")
         stamp_t = self.summary_t - C.SUMMARY_TALLY_TIME
         if stamp_t > 0:  # the rank stamps down once the numbers have counted up
             pop = max(0.0, 1.0 - stamp_t / 0.18)
-            self._text_scaled(overall, (r.centerx, r.top + 388), self.font_rank, RANK_COLORS[overall],
+            self._text_scaled(overall, (r.right - 90, r.bottom - 64), self.font_rank, RANK_COLORS[overall],
                               1.0 + 1.2 * pop, 1.0 - 0.6 * pop)
 
         self.menu_rects = []
         items = self._summary_items()
-        bw = [max(200, self.font_menu.size(label)[0] + 50) for label, _ in items]
-        x = (w - (sum(bw) + 18 * (len(items) - 1))) // 2
+        bw = [max(200, self.font_menu.size(label)[0] + 48) for label, _ in items]
+        x = (w - (sum(bw) + 40 * (len(items) - 1))) // 2
         for i, (label, _) in enumerate(items):
-            rect = pygame.Rect(x, top + ph + 18, bw[i], 52)
+            rect = pygame.Rect(x, top + ph + 22, bw[i], 46)
             self._button(rect, label, i == self.menu_index)
             self.menu_rects.append(rect)
-            x += bw[i] + 18
-        self._text("Left/Right + Enter or click    [R] fight again    [C] recalibrate    [Esc] menu",
-                   (w / 2, h - 14), self.font_small, (170, 170, 185), "center")
+            x += bw[i] + 40
+        A.text(self.screen, "LEFT/RIGHT + ENTER (OR CLICK)    R REMATCH    C RECALIBRATE    ESC MENU",
+               (w / 2, h - 8), self.font_tiny, A.DIM, "midbottom")
         self._draw_popup()
 
     def _text_scaled(self, msg, center, font, color, scale: float = 1.0, alpha: float = 1.0) -> None:
         """Centred outlined text, scaled and faded (for pops and stamps)."""
         surf = render_outlined(font, msg, color)
         if abs(scale - 1.0) > 1e-3:
-            surf = pygame.transform.smoothscale(surf, (max(1, int(surf.get_width() * scale)),
-                                                       max(1, int(surf.get_height() * scale))))
+            surf = pygame.transform.scale(surf, (max(1, int(surf.get_width() * scale)),
+                                                 max(1, int(surf.get_height() * scale))))
         surf.set_alpha(int(255 * max(0.0, min(1.0, alpha))))
         self.screen.blit(surf, surf.get_rect(center=(int(center[0]), int(center[1]))))
 
@@ -1215,10 +1243,8 @@ class Game:
         w, h = self.size
         n = max(1, math.ceil(remaining))
         frac = n - remaining  # 0 -> 1 within each second
-        size = int(220 + 120 * (1 - frac))
-        digit = pygame.font.Font(None, size).render(str(n), True, (255, 255, 255))
-        digit.set_alpha(int(255 * min(1.0, 1.4 - frac)))
-        self.screen.blit(digit, digit.get_rect(center=(w // 2, int(h * 0.5))))
+        self._text_scaled(str(n), (w // 2, int(h * 0.5)), self.font_count, arcade.YELLOW, 1.0 + 0.5 * (1 - frac),
+                          min(1.0, 1.4 - frac))
 
     def _warning_sign(self, center, size: float) -> None:
         cx, cy = center
@@ -1230,7 +1256,8 @@ class Game:
         pygame.draw.circle(self.screen, (40, 20, 0), (int(cx), int(cy + size * 0.33)), max(2, int(size * 0.06)))
 
     def _draw_intro(self) -> None:
-        """WARNING / '<BOSS> APPROACHING', then his name and title, then 3-2-1."""
+        """WARNING / '<BOSS> APPROACHES!', then his name and title, then 3-2-1."""
+        A = arcade
         w, h = self.size
         t = self.intro_t
         boss = self.boss
@@ -1247,35 +1274,34 @@ class Game:
                     pygame.draw.polygon(self.screen, (30, 20, 0), [(x, band.bottom), (x + 16, band.top),
                                                                  (x + 32, band.top), (x + 16, band.bottom)])
             if int(t * 6) % 2 == 0 or t > warn_end - 0.35:
-                self._text("WARNING", (w / 2, h * 0.41), self.font_huge, (255, 60, 50), "center")
-            msg = f"{boss['name']} APPROACHING"
+                A.text(self.screen, "WARNING", (w / 2, h * 0.41), self.font_huge, A.RED, "center", depth=6)
+            msg = f"{boss['name']} APPROACHES!"
             mw = self.font_menu.size(msg)[0]
-            self._text(msg, (w / 2, h * 0.535), self.font_menu, (255, 220, 120), "center")
+            A.text(self.screen, msg, (w / 2, h * 0.535), self.font_menu, A.YELLOW, "center")
             for side in (-1, 1):
-                self._warning_sign((w / 2 + side * (mw / 2 + 40), h * 0.535), 40)
+                self._warning_sign((w / 2 + side * (mw / 2 + 44), h * 0.535), 40)
         elif t < title_end:
             u = (t - warn_end) / C.INTRO_TITLE_TIME
             appear = min(1.0, u / 0.2)
             name_color = tuple(min(255, c + 100) for c in boss["rim"])
-            self._text(f"ROUND {self.boss_index + 1} / {len(C.BOSSES)}", (w / 2, h * 0.27), self.font,
-                       (200, 190, 230), "center")
+            A.text(self.screen, f"ROUND {self.boss_index + 1} / {len(C.BOSSES)}", (w / 2, h * 0.27), self.font_menu,
+                   A.CYAN, "center")
             self._text_scaled(boss["name"], (w / 2, h * 0.39), self.font_huge, name_color,
                               1.0 + 0.35 * (1.0 - appear), appear)
             title = boss.get("title", "")
             if title and u > 0.15:
                 a = min(1.0, (u - 0.15) / 0.2)
-                tw = self.font_menu.size(title)[0]
+                tw = self.font_head.size(title)[0]
                 for side in (-1, 1):
                     x0 = w / 2 + side * (tw / 2 + 20)
-                    pygame.draw.line(self.screen, (255, 220, 120), (x0, h * 0.505),
-                                     (x0 + side * 90 * a, h * 0.505), 3)
-                self._text_scaled(title, (w / 2, h * 0.505), self.font_menu, (255, 220, 120), 1.0, a)
+                    pygame.draw.rect(self.screen, A.YELLOW, (min(x0, x0 + side * 90 * a), h * 0.505 - 3, 90 * a, 6))
+                self._text_scaled(title, (w / 2, h * 0.505), self.font_head, A.YELLOW, 1.0, a)
         else:
-            self._text(f"ROUND {self.boss_index + 1}: {boss['name']}", (w / 2, h * 0.14), self.font_menu,
-                       (235, 225, 255), "center")
-            self._text("Get ready!", (w / 2, h * 0.21), self.font, anchor="center")
+            A.text(self.screen, f"ROUND {self.boss_index + 1}:  {boss['name']}", (w / 2, h * 0.14), self.font_head,
+                   A.WHITE, "center")
+            A.text(self.screen, "GET READY!", (w / 2, h * 0.21), self.font, A.CYAN, "center")
             self._draw_countdown_digit(C.INTRO_WARNING_TIME + C.INTRO_TITLE_TIME + C.COUNTDOWN_SECONDS - t)
-        self._text("[Enter] skip", (w - 20, h - 52), self.font_small, (170, 170, 185), "topright")
+        A.text(self.screen, "ENTER: SKIP", (w - 24, h - 16), self.font_tiny, A.DIM, "bottomright")
 
     def _draw_combo(self) -> None:
         """'4 HIT COMBO / AMAZING!' near the top while a combo is alive; pops on every new hit."""
@@ -1290,94 +1316,92 @@ class Game:
         pop = 1.0 + 0.55 * max(0.0, 1.0 - self.combo_pop_t / 0.18)
         size = 64 + 8 * min(s.combo - 2, 5)
         w, h = self.size
-        self._text_scaled(f"{s.combo} HIT COMBO", (w / 2, h * 0.19), self.effects.font(size), color, pop, alpha)
-        self._text_scaled(word, (w / 2, h * 0.19 + size * 0.75 * pop), self.effects.font(int(size * 0.7)), color,
+        self._text_scaled(f"{s.combo} HIT COMBO", (w / 2, h * 0.21), self.effects.font(size), color, pop, alpha)
+        self._text_scaled(word, (w / 2, h * 0.21 + size * 0.75 * pop), self.effects.font(int(size * 0.7)), color,
                           pop, alpha)
 
     def _text(self, msg, pos, font=None, color=(255, 255, 255), anchor="topleft") -> None:
-        font = font or self.font
-        shadow = font.render(msg, True, (0, 0, 0))
-        surf = font.render(msg, True, color)
-        rect = surf.get_rect(**{anchor: pos})
-        self.screen.blit(shadow, rect.move(2, 2))
-        self.screen.blit(surf, rect)
-
-    def _bar(self, x, y, w, h, value, trail, max_value, color, right_to_left=False) -> None:
-        pygame.draw.rect(self.screen, (20, 20, 28), (x - 3, y - 3, w + 6, h + 6), border_radius=4)
-        for v, c in ((trail, (240, 240, 240)), (value, color)):
-            fw = int(w * max(0.0, v) / max_value)
-            rx = x + w - fw if right_to_left else x
-            pygame.draw.rect(self.screen, c, (rx, y, fw, h), border_radius=3)
+        arcade.text(self.screen, msg, pos, font or self.font, color, anchor)
 
     def _draw_hud(self) -> None:
+        A, t = arcade, time.perf_counter()
         w, h = self.size
         cam_err = self.camera.error
 
         if self.mode in (MODE_FIGHT, MODE_OVER):
-            bw = int(w * 0.38)
-            bar_color = C.PLAYER_BAR
+            bw = int(w * 0.36)
+            bar_color = A.CYAN
             if self.low_health > 0:  # your bar throbs red with the heartbeat
-                k = self.sfx.heartbeat_pulse(time.perf_counter())
-                bar_color = tuple(int(a + (b - a) * k) for a, b in zip((255, 60, 60), (255, 200, 200)))
-            self._bar(30, 30, bw, 22, self.player.hp, self.trail_player, C.PLAYER_MAX_HP, bar_color)
-            self._bar(w - 30 - bw, 30, bw, 22, self.enemy.hp, self.trail_enemy, self.enemy.max_hp, C.ENEMY_BAR,
-                      True)
-            self._text("YOU", (30, 58), self.font)
-            self._text(self.enemy.name, (w - 30, 58), self.font, anchor="topright")
-            self._text(f"ROUND {self.boss_index + 1}/{len(C.BOSSES)}", (w / 2, 30), self.font, anchor="midtop")
+                k = self.sfx.heartbeat_pulse(t)
+                bar_color = tuple(int(a + (b - a) * k) for a, b in zip(A.RED, (255, 200, 200)))
+            A.seg_bar(self.screen, pygame.Rect(40, 34, bw, 22), self.player.hp / C.PLAYER_MAX_HP,
+                      self.trail_player / C.PLAYER_MAX_HP, bar_color)
+            A.seg_bar(self.screen, pygame.Rect(w - 40 - bw, 34, bw, 22), self.enemy.hp / self.enemy.max_hp,
+                      self.trail_enemy / self.enemy.max_hp, A.MAGENTA, rtl=True)
+            A.text(self.screen, "1UP  YOU", (36, 72), self.font_label, A.CYAN)
+            A.text(self.screen, self.enemy.name, (w - 36, 72), self.font_label, A.MAGENTA, "topright")
+            A.text(self.screen, f"ROUND {self.boss_index + 1}", (w / 2, 18), self.font_label, A.WHITE, "midtop")
+            A.text(self.screen, f"{self.stats.points():06d}", (w / 2, 40), self.font_menu, A.YELLOW, "midtop")
             in_range = self.player.in_range(C.PLAYER_PUNCH_MIN_DEPTH)
-            self._text(f"RANGE {'IN' if in_range else 'OUT'}  ({self.player.depth_ratio:.2f})", (30, 86),
-                       self.font_small, (120, 255, 160) if in_range else (255, 200, 80))
+            A.text(self.screen, "IN REACH" if in_range else "STEP IN", (36, 96), self.font_tiny,
+                   A.LIME if in_range else A.ORANGE)
             if self.player.is_jumping:
-                self._text("AIRBORNE", (30, 106), self.font_small, (120, 200, 255))
+                A.text(self.screen, "AIRBORNE!", (36, 116), self.font_tiny, A.CYAN)
 
-        stats = (f"FPS {self.pacer.fps:4.0f}   CAM {self.camera.camera_fps:4.1f}   "
-                 f"POSE {self.pose_ms:4.1f} ms   [D] debug {'ON' if self.debug else 'off'}   "
-                 "[R] restart   [C] calibrate   [F] fullscreen   "
-                 f"[M] {'unmute' if self.music.muted or self.sfx.muted else 'mute'}   [Esc] menu")
-        self._text(stats, (14, h - 26), self.font_small, (200, 200, 210))
+        if self.debug:  # tech readout only in debug mode
+            stats = (f"FPS {self.pacer.fps:4.0f}   CAM {self.camera.camera_fps:4.1f}   POSE {self.pose_ms:4.1f} ms   "
+                     f"DEPTH {self.player.depth_ratio:.2f}   [D] debug ON")
+            A.text(self.screen, stats, (14, h - 30), self.font_small, A.WHITE)
+        elif self.mode in (MODE_FIGHT, MODE_OVER):
+            A.text(self.screen, "ESC MENU   R RESTART   M MUTE", (w - 16, h - 12), self.font_tiny, A.DIM, "bottomright")
 
         if cam_err:
-            self._text("Camera / pose error", (w / 2, h / 2 - 40), self.font_big, (255, 90, 90), "center")
-            self._text(cam_err, (w / 2, h / 2 + 30), self.font, anchor="center")
+            A.text(self.screen, "CAMERA PROBLEM", (w / 2, h / 2 - 40), self.font_big, A.RED, "center")
+            A.text(self.screen, cam_err, (w / 2, h / 2 + 30), self.font, A.WHITE, "center")
             return
         if self.background is None:
-            self._text("Starting camera...", (w / 2, h / 2), self.font_big, anchor="center")
+            A.text(self.screen, "WARMING UP THE CAMERA...", (w / 2, h / 2), self.font_head, A.WHITE, "center")
             return
 
         if self.mode == MODE_COUNTDOWN:
-            self._text(f"ROUND {self.boss_index + 1}: {self.boss['name']}", (w / 2, h * 0.12), self.font_big,
-                       (235, 225, 255), "center")
-            self._text("Get into position: about 6 ft (2 m) back, whole body in view", (w / 2, h * 0.21),
-                       self.font, anchor="center")
+            A.text(self.screen, "GET IN POSITION!", (w / 2, h * 0.12), self.font_big, A.YELLOW, "center",
+                   shadow=A.MAGENTA)
+            A.text(self.screen, "STAND ABOUT 6 FT (2 M) BACK, WHOLE BODY IN VIEW", (w / 2, h * 0.21), self.font,
+                   A.WHITE, "center")
             self._draw_countdown_digit(self.countdown_t)
         elif self.mode == MODE_INTRO:
             self._draw_intro()
         elif self.mode == MODE_CALIBRATE:
-            self._text("CALIBRATION", (w / 2, h * 0.12), self.font_big, anchor="center")
-            self._text("Hold still with your whole body in view.", (w / 2, h * 0.21), self.font, anchor="center")
-            if not self.player.tracked:
-                self._text("No body detected: step into view", (w / 2, h * 0.27), self.font,
-                           (255, 200, 80), "center")
+            A.text(self.screen, "HOLD STILL...", (w / 2, h * 0.12), self.font_big, A.CYAN, "center", shadow=A.MAGENTA)
+            A.text(self.screen, "SCANNING YOUR FIGHTER.  WHOLE BODY IN VIEW, PLEASE.", (w / 2, h * 0.21), self.font,
+                   A.WHITE, "center")
+            if not self.player.tracked and int(t * 2) % 2 == 0:
+                A.text(self.screen, "CAN'T SEE YOU - STEP INTO VIEW!", (w / 2, h * 0.27), self.font, A.ORANGE,
+                       "center")
             bw = int(w * 0.4)
-            self._bar(int(w / 2 - bw / 2), int(h * 0.31), bw, 16, self.player.calibration_progress,
-                      self.player.calibration_progress, 1.0, (120, 255, 160))
+            p = self.player.calibration_progress
+            A.seg_bar(self.screen, pygame.Rect(int(w / 2 - bw / 2), int(h * 0.31), bw, 18), p, p, A.LIME)
         elif self.mode == MODE_FIGHT and not self.player.tracked:
-            self._text("STEP INTO VIEW", (w / 2, h * 0.45), self.font_big, (255, 200, 80), "center")
+            if int(t * 2) % 2 == 0:
+                A.text(self.screen, "STEP BACK INTO VIEW!", (w / 2, h * 0.45), self.font_big, A.ORANGE, "center",
+                       shadow=A.INK)
         elif self.mode == MODE_FIGHT:
             self._draw_combo()
         elif self.mode == MODE_OVER and self.over_timer > (0.8 if self.result == "DEFEAT" else 2.2):
             if self.result == "VICTORY":
+                A.text(self.screen, "YOU WIN!", (w / 2, h * 0.4), self.font_huge, A.LIME, "center", shadow=A.MAGENTA)
                 nxt = C.BOSSES[self.boss_index + 1]["name"]
-                self._text("VICTORY", (w / 2, h * 0.4), self.font_big, (120, 255, 160), "center")
-                self._text(f"Next up: {nxt}", (w / 2, h * 0.5), self.font, anchor="center")
+                A.text(self.screen, f"NEXT UP: {nxt}", (w / 2, h * 0.52), self.font_menu, A.WHITE, "center")
             elif self.result == "CHAMPION":
-                self._text("CHAMPION!", (w / 2, h * 0.4), self.font_big, (255, 220, 90), "center")
-                self._text("You beat every boss!", (w / 2, h * 0.5), self.font, anchor="center")
+                A.text(self.screen, "ALL BOSSES DOWN!", (w / 2, h * 0.4), self.font_big, A.YELLOW, "center",
+                       shadow=A.MAGENTA)
+                A.text(self.screen, "YOU ARE THE CHAMPION", (w / 2, h * 0.52), self.font_menu, A.WHITE, "center")
             else:
-                self._text("DEFEAT", (w / 2, h * 0.4), self.font_big, (255, 90, 90), "center")
-                self._text(f"{self.enemy.name} wins this round", (w / 2, h * 0.5), self.font, anchor="center")
-            self._text("Enter: fight summary", (w / 2, h * 0.56), self.font_small, (200, 200, 210), "center")
+                A.text(self.screen, "GAME OVER", (w / 2, h * 0.4), self.font_huge, A.RED, "center", shadow=A.INK)
+                A.text(self.screen, f"{self.enemy.name} TAKES THIS ONE", (w / 2, h * 0.52), self.font_menu, A.WHITE,
+                       "center")
+            if int(t * 2) % 2 == 0:
+                A.text(self.screen, "PRESS ENTER", (w / 2, h * 0.6), self.font_label, A.YELLOW, "center")
 
 
 def main() -> None:

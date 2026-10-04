@@ -19,10 +19,13 @@ class Leaderboard:
         self.entries: List[dict] = self._load()   # best first
 
     def _load(self) -> List[dict]:
-        try:
-            raw = json.loads(self.path.read_text())["entries"]
-        except (OSError, ValueError, KeyError, TypeError):
-            return []
+        if not self.path.exists():
+            raw = C.LEADERBOARD_SEED  # no saved board yet: start from the seeded one
+        else:
+            try:
+                raw = json.loads(self.path.read_text())["entries"]
+            except (OSError, ValueError, KeyError, TypeError):
+                return []
         entries = []
         for e in raw if isinstance(raw, list) else []:
             try:

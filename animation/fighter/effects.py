@@ -5,41 +5,9 @@ import math
 import random
 from typing import Dict, Iterable, List, Tuple
 
-import numpy as np
 import pygame
 
-from . import arcade
-from . import config as C
 from .geometry import Vec
-
-
-def render_outlined(font: pygame.font.Font, msg: str, color, outline: int = 0) -> pygame.Surface:
-    """Text with a thick black outline and drop shadow: readable over any camera background."""
-    outline = outline or max(2, font.get_height() // 12)
-    fg = font.render(msg, True, color)
-    black = font.render(msg, True, (0, 0, 0))
-    pad = outline + 4
-    surf = pygame.Surface((fg.get_width() + pad * 2, fg.get_height() + pad * 2), pygame.SRCALPHA)
-    surf.blit(black, (pad + 4, pad + 4))  # drop shadow
-    for i in range(16):
-        a = math.tau * i / 16
-        surf.blit(black, (pad + round(math.cos(a) * outline), pad + round(math.sin(a) * outline)))
-    surf.blit(fg, (pad, pad))
-    return surf
-
-
-def make_vignette(size: Tuple[int, int], color) -> pygame.Surface:
-    """Transparent in the middle, `color` at the edges and corners (the low-health pulse)."""
-    w, h = size
-    surf = pygame.Surface(size, pygame.SRCALPHA)
-    surf.fill((*color, 0))
-    x = np.linspace(-1.0, 1.0, w, dtype=np.float32)[:, None]
-    y = np.linspace(-1.0, 1.0, h, dtype=np.float32)[None, :]
-    d = np.sqrt(x * x + y * y) / math.sqrt(2.0)  # 0 in the centre, 1 in the corners
-    alpha = pygame.surfarray.pixels_alpha(surf)
-    alpha[:] = (np.clip((d - 0.3) / 0.7, 0.0, 1.0) ** 1.5 * 255).astype(np.uint8)
-    del alpha  # unlock the surface
-    return surf
 
 
 class Particle:
@@ -70,9 +38,8 @@ class Effects:
         self._fonts: Dict[int, pygame.font.Font] = {}
 
     def font(self, size: int) -> pygame.font.Font:
-        """Arcade pixel font at roughly the visual size pygame's default font has at `size`."""
         if size not in self._fonts:
-            self._fonts[size] = arcade.pixel(max(8, int(size * 0.55)))
+            self._fonts[size] = pygame.font.Font(None, size)
         return self._fonts[size]
 
     def clear(self) -> None:
@@ -99,16 +66,12 @@ class Effects:
                     random.uniform(0.6, 1.4), color, random.uniform(6, 14), -40.0))
 
     def text(self, msg: str, pos: Vec, color, size: int = 44, life: float = 0.9) -> None:
-        """Floating text, scaled up and outlined so it reads from across the room (POPUP_TEXT_* in config)."""
-        surf = render_outlined(self.font(int(size * C.POPUP_TEXT_SCALE)), msg, color)
-        w, h = self._overlay.get_size()
-        if surf.get_width() > w * 0.95:  # long messages shrink to fit the screen
-            k = w * 0.95 / surf.get_width()
-            surf = pygame.transform.smoothscale(surf, (int(surf.get_width() * k), int(surf.get_height() * k)))
-        # keep it fully on screen (it also drifts upward while it fades)
-        x = min(max(pos[0], surf.get_width() / 2 + 8), w - surf.get_width() / 2 - 8)
-        y = min(max(pos[1], surf.get_height() / 2 + 8 + 60 * life), h - surf.get_height() / 2 - 8)
-        self.texts.append(FloatingText(surf, x, y, life * C.POPUP_TEXT_LIFE_SCALE))
+        font = self.font(size)
+        fg = font.render(msg, True, color)
+        surf = pygame.Surface((fg.get_width() + 3, fg.get_height() + 3), pygame.SRCALPHA)
+        surf.blit(font.render(msg, True, (0, 0, 0)), (3, 3))
+        surf.blit(fg, (0, 0))
+        self.texts.append(FloatingText(surf, pos[0], pos[1], life))
 
     def shake(self, magnitude: float) -> None:
         self.shake_mag = max(self.shake_mag, magnitude)

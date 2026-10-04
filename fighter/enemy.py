@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Tuple
 import pygame
 
 from . import config as C
+from . import arcade
 from .effects import render_outlined
 from .geometry import Capsule, Circle, Vec, draw_shape
 
@@ -244,7 +245,7 @@ def _make_glow(radius: int, color) -> pygame.Surface:
 class ShadowEnemy:
     def __init__(self, screen_w: int, screen_h: int):
         self.sw, self.sh = screen_w, screen_h
-        self.cue_font = pygame.font.Font(None, C.CUE_TEXT_SIZE)
+        self.cue_font = arcade.pixel(int(C.CUE_TEXT_SIZE * 0.55))
         self._cue_cache: Dict[Tuple[str, Tuple[int, int, int]], pygame.Surface] = {}
         self.debug_font = pygame.font.Font(None, 22)
         self.reset(ground_y=screen_h - 10, height=screen_h * 0.75, x=screen_w * 0.75, boss=C.BOSSES[0])
