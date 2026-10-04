@@ -19,6 +19,7 @@ LANDMARKS = {
     "l_hip": 23, "r_hip": 24,
     "l_knee": 25, "r_knee": 26,
     "l_ankle": 27, "r_ankle": 28,
+    "l_foot": 31, "r_foot": 32,
 }
 CORE = ("l_shoulder", "r_shoulder", "l_hip", "r_hip")
 SKELETON = [
@@ -28,6 +29,7 @@ SKELETON = [
     ("r_shoulder", "r_elbow"), ("r_elbow", "r_wrist"), ("r_wrist", "r_index"),
     ("l_hip", "l_knee"), ("l_knee", "l_ankle"),
     ("r_hip", "r_knee"), ("r_knee", "r_ankle"),
+    ("l_ankle", "l_foot"), ("r_ankle", "r_foot"),
 ]
 SIDES = ("l", "r")
 
@@ -50,11 +52,13 @@ class PlayerTracker:
     def reset_fight(self) -> None:
         self.hp = float(C.PLAYER_MAX_HP)
         self.punch_cooldown = {s: 0.0 for s in SIDES}
+        self.kick_cooldown = {s: 0.0 for s in SIDES}
 
     def reset_calibration(self) -> None:
         self.pts: Dict[str, Vec] = {}             # smoothed screen-space landmarks
         self.fist_vel: Dict[str, Vec] = {s: (0.0, 0.0) for s in SIDES}
-        self._prev_fist_raw: Dict[str, Vec] = {}
+        self.foot_vel: Dict[str, Vec] = {s: (0.0, 0.0) for s in SIDES}
+        self._prev_limb_raw: Dict[tuple, Vec] = {}
         self._prev_capture_t: Optional[float] = None
         self.last_seen = -1e9
         self._now = 0.0
@@ -80,7 +84,7 @@ class PlayerTracker:
     # --- per camera frame ----------------------------------------------------
     def ingest(self, landmarks: Optional[np.ndarray], capture_time: float, now: float) -> None:
         if landmarks is None:
-            self._prev_fist_raw.clear()
+            self._prev_limb_raw.clear()
             return
 
         raw: Dict[str, Vec] = {}
@@ -89,7 +93,7 @@ class PlayerTracker:
             if vis >= C.LANDMARK_VISIBILITY:
                 raw[name] = (float(x) * self.sw, float(y) * self.sh)
         if not all(k in raw for k in CORE):
-            self._prev_fist_raw.clear()
+            self._prev_limb_raw.clear()
             return
 
         dt_cap = 0.0 if self._prev_capture_t is None else capture_time - self._prev_capture_t
@@ -115,18 +119,21 @@ class PlayerTracker:
         else:
             self.unit = torso if self.unit <= 0 else self.unit + (torso - self.unit) * 0.3
 
-        # Fist velocity from raw (unsmoothed) positions so smoothing doesn't dull punches.
-        for side in SIDES:
-            fist = self._fist_point(raw, side)
-            prev = self._prev_fist_raw.get(side)
-            if fist is not None and prev is not None and 0.0 < dt_cap < 0.25:
-                self.fist_vel[side] = ((fist[0] - prev[0]) / dt_cap, (fist[1] - prev[1]) / dt_cap)
-            else:
-                self.fist_vel[side] = (0.0, 0.0)
-            if fist is None:
-                self._prev_fist_raw.pop(side, None)
-            else:
-                self._prev_fist_raw[side] = fist
+        # Fist and foot velocity from raw (unsmoothed) positions so smoothing doesn't
+        # dull punches and kicks.
+        for kind, point_fn, vel in (("fist", self._fist_point, self.fist_vel),
+                                    ("foot", self._foot_point, self.foot_vel)):
+            for side in SIDES:
+                p = point_fn(raw, side)
+                prev = self._prev_limb_raw.get((kind, side))
+                if p is not None and prev is not None and 0.0 < dt_cap < 0.25:
+                    vel[side] = ((p[0] - prev[0]) / dt_cap, (p[1] - prev[1]) / dt_cap)
+                else:
+                    vel[side] = (0.0, 0.0)
+                if p is None:
+                    self._prev_limb_raw.pop((kind, side), None)
+                else:
+                    self._prev_limb_raw[(kind, side)] = p
 
         if self.calibrated:
             self._update_jump(raw, dt_cap, now)
@@ -138,6 +145,7 @@ class PlayerTracker:
         self._now = now
         for side in SIDES:
             self.punch_cooldown[side] = max(0.0, self.punch_cooldown[side] - dt)
+            self.kick_cooldown[side] = max(0.0, self.kick_cooldown[side] - dt)
         if not self.calibrated and self.tracked:
             self.calib_time += dt
             if self.calib_time >= C.CALIBRATION_SECONDS and len(self._calib_samples) >= 8:
@@ -245,6 +253,17 @@ class PlayerTracker:
             return (wrist[0] + (wrist[0] - elbow[0]) * 0.15, wrist[1] + (wrist[1] - elbow[1]) * 0.15)
         return wrist
 
+    def _foot_point(self, pts: Dict[str, Vec], side: str) -> Optional[Vec]:
+        ankle = pts.get(f"{side}_ankle")
+        if ankle is None:
+            return None
+        toe = pts.get(f"{side}_foot")
+        return _mid(ankle, toe) if toe is not None else ankle
+
+    def foot_speed(self, side: str) -> float:
+        vx, vy = self.foot_vel[side]
+        return math.hypot(vx, vy) / max(self.unit, 1.0)
+
     def fist_speed(self, side: str) -> float:
         vx, vy = self.fist_vel[side]
         return math.hypot(vx, vy) / max(self.unit, 1.0)
@@ -305,6 +324,14 @@ class PlayerTracker:
                 out[side] = Circle(p, C.FIST_RADIUS * self.unit)
         return out
 
+    def feet(self) -> Dict[str, Circle]:
+        out = {}
+        for side in SIDES:
+            p = self._foot_point(self.pts, side)
+            if p is not None:
+                out[side] = Circle(p, C.FOOT_RADIUS * self.unit)
+        return out
+
     def legs(self) -> List[Capsule]:
         r = C.LEG_RADIUS * self.unit
         out = []
@@ -341,6 +368,9 @@ class PlayerTracker:
         for side, fist in self.fists().items():
             fast = self.fist_speed(side) >= C.PUNCH_SPEED_THRESHOLD
             draw_shape(surf, fist, (255, 60, 60) if fast else (255, 230, 60), 0 if fast else 2)
+        for side, foot in self.feet().items():
+            fast = self.foot_speed(side) >= C.KICK_SPEED_THRESHOLD
+            draw_shape(surf, foot, (255, 60, 60) if fast else (255, 120, 220), 0 if fast else 2)
         if self.expected_ground is not None:
             y = int(self.expected_ground)
             pygame.draw.line(surf, (255, 160, 40), (0, y), (self.sw, y), 1)
@@ -351,6 +381,7 @@ class PlayerTracker:
                 f"depth {self.depth_ratio:.2f}",
                 f"rise {self.rise:+.2f}{'  AIR' if self.airborne else ''}",
                 f"fist L {self.fist_speed('l'):.1f}  R {self.fist_speed('r'):.1f}",
+                f"foot L {self.foot_speed('l'):.1f}  R {self.foot_speed('r'):.1f}",
             ]
             for i, text in enumerate(lines):
                 surf.blit(font.render(text, True, (255, 255, 255)), (x, y + i * 18))

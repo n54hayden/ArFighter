@@ -8,6 +8,7 @@ Controls:
     R      restart the fight
     C      recalibrate (stand ~6 ft / 2 m back, full body in view)
     F      toggle fullscreen
+    M      mute / unmute music and sound effects
     Esc/Q  quit
 
 Threads:
@@ -20,10 +21,13 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from pathlib import Path
 
 import pygame
 
 from fighter import config as C
+from fighter.audio import Music
+from fighter.sfx import SoundEffects
 from fighter.camera import CameraThread
 from fighter.effects import Effects
 from fighter.enemy import EnemyState, ShadowEnemy
@@ -89,6 +93,9 @@ class Game:
         self.player = PlayerTracker(*self.size)
         self.enemy = ShadowEnemy(*self.size)
         self.effects = Effects(self.size)
+        here = Path(__file__).resolve().parent
+        self.music = Music(here / C.MUSIC_DIR)
+        self.sfx = SoundEffects(here / C.SFX_DIR)
 
         self.mode = MODE_CALIBRATE
         self.debug = debug
@@ -112,6 +119,7 @@ class Game:
                 self._update(dt, now)
                 self._draw()
         finally:
+            self.music.stop()
             self.camera.stop()
             self.camera.join(timeout=2.0)
             pygame.quit()
@@ -130,9 +138,14 @@ class Game:
                 elif event.key == pygame.K_c:
                     self.player.reset_calibration()
                     self.effects.clear()
+                    self.music.stop()
+                    self.sfx.stop()
                     self.mode = MODE_CALIBRATE
                 elif event.key == pygame.K_f:
                     pygame.display.toggle_fullscreen()
+                elif event.key == pygame.K_m:
+                    self.music.toggle_mute()
+                    self.sfx.muted = self.music.muted if self.music.available else not self.sfx.muted
 
     def _poll_camera(self, now: float) -> None:
         """Non-blocking: picks up the newest camera snapshot if there is one."""
@@ -155,9 +168,12 @@ class Game:
         self.trail_player = float(C.PLAYER_MAX_HP)
         self.trail_enemy = float(C.ENEMY_MAX_HP)
         self.mode = MODE_FIGHT
+        self.sfx.stop()  # cut off a victory cheer still playing from the last fight
+        self.sfx.bell_ring()
+        self.music.start()
         self.effects.text("FIGHT!", (self.size[0] / 2, self.size[1] * 0.35), (255, 255, 255), 110, 1.2)
         if not p.full_body_visible:
-            self.effects.text("Feet not visible: step back to dodge sweeps by jumping",
+            self.effects.text("Feet not visible: step back so you can kick and jump over sweeps",
                               (self.size[0] / 2, self.size[1] * 0.47), (255, 200, 80), 32, 3.0)
 
     def _update(self, dt: float, now: float) -> None:
@@ -172,9 +188,15 @@ class Game:
             return
 
         self.enemy.update(dt, self.player)
+        if self.enemy.pop_landed():  # shadow hit the floor after a knockdown
+            self.effects.shake(12)
+            self.effects.burst((self.enemy.x - self.enemy.facing * self.enemy.H * 0.4, self.enemy.ground_y),
+                               (60, 50, 70), 24, 300, size=(3.0, 7.0), gravity=600)
+            self.sfx.punch(0.6)
         if self.mode == MODE_FIGHT:
+            self.music.set_paused(not self.player.tracked)
             if self.player.tracked:
-                self._resolve_player_punches()
+                self._resolve_player_attacks()
                 self._resolve_enemy_strike()
             if self.enemy.state is EnemyState.DEAD:
                 self._end("VICTORY")
@@ -186,42 +208,63 @@ class Game:
     def _end(self, result: str) -> None:
         self.mode = MODE_OVER
         self.result = result
+        self.music.set_paused(False)  # a paused track can't fade out
+        self.music.fade_out()
+        if result == "VICTORY":
+            self.sfx.cheer_crowd()
         self.over_timer = 0.0
 
-    def _resolve_player_punches(self) -> None:
+    def _resolve_player_attacks(self) -> None:
+        """Punches (fast fists) and kicks (fast feet) that reach the shadow's body or head."""
         enemy, player = self.enemy, self.player
-        if enemy.state is EnemyState.DEAD or not player.in_range(C.PLAYER_PUNCH_MIN_DEPTH):
+        if not enemy.can_be_hit or not player.in_range(C.PLAYER_PUNCH_MIN_DEPTH):
             return
         hurtboxes = enemy.hurtboxes()
         ec = enemy.center()
-        for side, fist in player.fists().items():
-            if player.punch_cooldown[side] > 0:
+        strikes = [("punch", side, c, player.fist_vel[side], player.fist_speed(side))
+                   for side, c in player.fists().items()]
+        strikes += [("kick", side, c, player.foot_vel[side], player.foot_speed(side))
+                    for side, c in player.feet().items()]
+        for kind, side, limb, (vx, vy), speed in strikes:
+            kick = kind == "kick"
+            cooldowns = player.kick_cooldown if kick else player.punch_cooldown
+            threshold = C.KICK_SPEED_THRESHOLD if kick else C.PUNCH_SPEED_THRESHOLD
+            if cooldowns[side] > 0 or speed < threshold:
                 continue
-            speed = player.fist_speed(side)
-            if speed < C.PUNCH_SPEED_THRESHOLD:
-                continue
-            vx, vy = player.fist_vel[side]
-            if vx * (ec[0] - fist.center[0]) + vy * (ec[1] - fist.center[1]) <= 0:
-                continue  # fist moving away from the enemy (pulling back), not a punch
-            if not any(intersects(fist, hb) for hb in hurtboxes):
+            if vx * (ec[0] - limb.center[0]) + vy * (ec[1] - limb.center[1]) <= 0:
+                continue  # moving away from the enemy (pulling back), not a strike
+            if not any(intersects(limb, hb) for hb in hurtboxes):
                 continue
 
-            power = min(1.0, (speed - C.PUNCH_SPEED_THRESHOLD) / C.PUNCH_SPEED_THRESHOLD)
-            damage = round(C.PUNCH_DAMAGE_MIN + (C.PUNCH_DAMAGE_MAX - C.PUNCH_DAMAGE_MIN) * power)
-            player.punch_cooldown[side] = C.PUNCH_COOLDOWN
-            result = enemy.take_hit(damage)
+            power = min(1.0, (speed - threshold) / threshold)
+            lo, hi = (C.KICK_DAMAGE_MIN, C.KICK_DAMAGE_MAX) if kick else (C.PUNCH_DAMAGE_MIN, C.PUNCH_DAMAGE_MAX)
+            damage = round(lo + (hi - lo) * power)
+            cooldowns[side] = C.KICK_COOLDOWN if kick else C.PUNCH_COOLDOWN
+            result = enemy.take_kick(damage) if kick else enemy.take_hit(damage)
+            pos = limb.center
 
-            self.effects.burst(fist.center, (255, 240, 200), 22, 520)
-            self.effects.burst(fist.center, (255, 140, 40), 12, 320)
-            self.effects.text(f"-{damage}", (fist.center[0], fist.center[1] - 40), (255, 220, 120), 40)
-            self.effects.shake(6 + 6 * power)
-            if result == "ko":
+            if result == "blocked":
+                dealt = round(damage * C.ENEMY_KICK_BLOCK_DAMAGE)
+                self.effects.burst(pos, (200, 150, 255), 16, 360)
+                self.effects.text(f"BLOCKED -{dealt}", (pos[0], pos[1] - 40), (200, 160, 255), 40)
+                self.effects.shake(5)
+                self.sfx.punch(0.5)
+            else:
+                self.effects.burst(pos, (255, 240, 200), 30 if kick else 22, 620 if kick else 520)
+                self.effects.burst(pos, (255, 140, 40), 12, 320)
+                self.effects.text(f"-{damage}", (pos[0], pos[1] - 40), (255, 220, 120), 48 if kick else 40)
+                self.effects.shake((10 if kick else 6) + 6 * power)
+                self.sfx.punch(0.85 + 0.15 * power if kick else 0.7 + 0.3 * power)
+            if result == "knockdown":
+                self.effects.text("KNOCKDOWN!", (ec[0], ec[1] - enemy.H * 0.45), (255, 200, 80), 64, 1.2)
+            elif result == "ko":
                 sk = enemy.sk
                 self.effects.smoke([sk[k] for k in ("head", "shoulder", "hip", "f_hand", "r_hand",
                                                     "f_elbow", "r_elbow", "f_knee", "r_knee",
                                                     "f_ankle", "r_ankle")], per_point=10)
                 self.effects.text("K.O.", (ec[0], ec[1] - enemy.H * 0.5), (255, 255, 255), 120, 1.6)
                 self.effects.shake(18)
+            if not enemy.can_be_hit:
                 return
 
     def _strike_contact(self, spec, strike):
@@ -272,6 +315,7 @@ class Game:
             self.effects.text("BLOCK" if chip < 0.5 else f"BLOCK -{chip:.0f}", (pos[0], pos[1] - 30),
                               (140, 210, 255), 40)
             self.effects.shake(4)
+            self.sfx.punch(0.45)
             return
 
         damage = spec.damage * (C.HEAD_HIT_MULTIPLIER if contact == "head" else 1.0)
@@ -279,6 +323,7 @@ class Game:
         self.effects.burst(pos, (255, 60, 60), 20, 420)
         self.effects.text(f"{spec.label}! -{damage:.0f}", (pos[0], pos[1] - 30), (255, 90, 90), 42)
         self.effects.flash((180, 0, 0), 110)
+        self.sfx.punch(1.0)
         self.effects.shake(10 + damage * 0.5)
 
     # --- rendering -----------------------------------------------------------
@@ -336,7 +381,8 @@ class Game:
 
         stats = (f"FPS {self.pacer.fps:4.0f}   CAM {self.camera.camera_fps:4.1f}   "
                  f"POSE {self.pose_ms:4.1f} ms   [D] debug {'ON' if self.debug else 'off'}   "
-                 "[R] restart   [C] calibrate   [F] fullscreen   [Esc] quit")
+                 "[R] restart   [C] calibrate   [F] fullscreen   "
+                 f"[M] {'unmute' if self.music.muted or self.sfx.muted else 'mute'}   [Esc] quit")
         self._text(stats, (14, h - 26), self.font_small, (200, 200, 210))
 
         if cam_err:

@@ -11,6 +11,21 @@ SCREEN_H = 720
 FPS = 60
 WINDOW_TITLE = "AR Shadow Fighter"
 
+# --- Music -------------------------------------------------------------------
+MUSIC_DIR = "music"               # relative to ar_fighter.py; first .mp3/.ogg/.wav is played
+MUSIC_VOLUME = 0.6                # 0.0 - 1.0
+MUSIC_FADE_IN_MS = 500
+MUSIC_FADE_OUT_MS = 1200
+
+# --- Sound effects -----------------------------------------------------------
+SFX_DIR = "sound_effects"         # relative to ar_fighter.py
+SFX_VOLUME = 0.9                  # 0.0 - 1.0
+SFX_KEYWORDS = {                  # a file is used for a role if its name contains any keyword
+    "bell": ("bell",),
+    "punch": ("punch", "impact", "hit"),
+    "cheer": ("cheer", "crowd", "applause"),
+}
+
 # --- Camera / pose thread ----------------------------------------------------
 # On this Mac, index 0 is the iPhone (Continuity Camera) when it's nearby and 1 is the
 # built-in FaceTime camera. With no phone around, the FaceTime camera becomes 0, so
@@ -36,6 +51,7 @@ HEAD_RADIUS = 0.36
 TORSO_RADIUS = 0.30
 FOREARM_RADIUS = 0.14
 FIST_RADIUS = 0.20
+FOOT_RADIUS = 0.24
 LEG_RADIUS = 0.16
 
 # --- Player offence ----------------------------------------------------------
@@ -43,7 +59,11 @@ PUNCH_SPEED_THRESHOLD = 3.5       # torso units / second for a fist to count as 
 PUNCH_COOLDOWN = 0.30             # per fist, prevents one punch registering many times
 PUNCH_DAMAGE_MIN = 4
 PUNCH_DAMAGE_MAX = 10
-PLAYER_PUNCH_MIN_DEPTH = 0.80     # step back past this and your punches can't reach
+PLAYER_PUNCH_MIN_DEPTH = 0.80     # step back past this and your punches/kicks can't reach
+KICK_SPEED_THRESHOLD = 4.0        # torso units / second for a foot to count as a kick
+KICK_COOLDOWN = 0.5
+KICK_DAMAGE_MIN = 8
+KICK_DAMAGE_MAX = 16
 
 # --- Player defence ----------------------------------------------------------
 PLAYER_MAX_HP = 100
@@ -54,17 +74,23 @@ JUMP_GRACE = 0.15                 # seconds a jump still counts after landing (l
 GROUND_ADAPT_TAU = 1.0            # seconds; how fast the floor baseline drifts while grounded
 
 # --- Enemy -------------------------------------------------------------------
-ENEMY_MAX_HP = 100
-ENEMY_WALK_SPEED = 0.6            # body heights / second
+ENEMY_MAX_HP = 200
+ENEMY_WALK_SPEED = 0.8            # body heights / second
 ENEMY_AIM_OFFSET = 0.15           # aim strikes this many torso units in front of the target's centre
-ENEMY_FIRST_ATTACK_DELAY = 1.5
-ENEMY_IDLE_MIN = 0.5
-ENEMY_IDLE_MAX = 1.3
+ENEMY_FIRST_ATTACK_DELAY = 1.0
+ENEMY_IDLE_MIN = 0.25           # pause between attacks (shrinks further as the shadow gets hurt)
+ENEMY_IDLE_MAX = 0.7
 ENEMY_APPROACH_TIMEOUT = 2.5
-ENEMY_COMBO_CHANCE = 0.4          # chance a jab is followed straight away by a cross
+ENEMY_COMBO_CHANCE = 0.5          # chance a jab is followed straight away by a cross
 ENEMY_STUN_TIME = 0.55
 ENEMY_STUN_IMMUNITY = 0.6         # after a stun, hits still hurt but don't re-stun
 ENEMY_KNOCKBACK = 0.9             # body heights / second
+ENEMY_KICK_BLOCK_CHANCE = 0.3     # chance the shadow blocks a kick while it isn't attacking or stunned
+ENEMY_KICK_BLOCK_DAMAGE = 0.25    # fraction of kick damage that gets through a block
+ENEMY_FALL_TIME = 0.4             # knockdown: falling...
+ENEMY_DOWN_TIME = 1.2             # ...lying on the ground (can't be hit)...
+ENEMY_GETUP_TIME = 0.6            # ...and getting back up
+ENEMY_KNOCKDOWN_KNOCKBACK = 1.4   # body heights / second
 ENEMY_POSE_BLEND = 16.0
 ENEMY_ATTACK_SPEED = 1.0          # > 1 = faster attacks (harder)
 ENEMY_ATTACK_WEIGHTS = {

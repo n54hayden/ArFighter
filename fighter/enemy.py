@@ -44,6 +44,11 @@ KICK_EXT = _pose(lean=-28, fh=140, fk=-8, rh=-10, rk=-2, fs=-20, fe=60, rs=10, r
 SWEEP_WIND = _pose(lean=20, rh=60, rk=-115, fh=60, fk=-120, fs=20, fe=60, rs=-10, re=40)
 SWEEP_EXT = _pose(lean=35, rh=65, rk=-130, fh=80, fk=-2, fs=-30, fe=40, rs=-50, re=30, dx=0.04)
 STUN_POSE = _pose(lean=-22, fs=-30, fe=30, rs=-45, re=20, fh=25, fk=-35, dx=-0.04)
+BLOCK_POSE = _pose(lean=-6, fs=70, fe=105, rs=55, re=115, fh=75, fk=-105)  # knee up to check the kick
+FALL_POSE = _pose(lean=-10, fs=150, fe=20, rs=120, re=30, fh=40, fk=-30, rh=0, rk=-10)
+DOWN_POSE = _pose(lean=0, fs=170, fe=10, rs=150, re=20, fh=25, fk=-50, rh=10, rk=-25)
+GETUP_POSE = _pose(lean=30, rh=60, rk=-110, fh=70, fk=-120, fs=50, fe=90, rs=40, re=110)
+KNOCKDOWN_TILT = 88.0  # degrees the body rotates backward when it falls
 
 
 def lerp_pose(a: Pose, b: Pose, t: float) -> Pose:
@@ -108,6 +113,7 @@ class EnemyState(Enum):
     APPROACH = auto()
     ATTACK = auto()
     STUNNED = auto()
+    KNOCKDOWN = auto()
     DEAD = auto()
 
 
@@ -179,6 +185,10 @@ class ShadowEnemy:
         self.flash_t = 0.0
         self.walk_phase = 0.0
         self.anim_t = 0.0
+        self.tilt = 0.0          # knockdown rotation (degrees, backward)
+        self.down_t = 0.0
+        self.block_t = 0.0
+        self._landed = False
         self._reach = {name: self._strike_offset(spec) for name, spec in ATTACKS.items()}
         glow_r = max(8, int(self.H * 0.09))
         self._glow = _make_glow(glow_r, (255, 50, 30))
@@ -220,6 +230,23 @@ class ShadowEnemy:
             "r_knee": roff(rk), "r_ankle": roff(ra), "r_toe": roff(rt),
         }
 
+    def _apply_tilt(self, sk: Dict[str, Vec]) -> Dict[str, Vec]:
+        """Rotate the whole body backward around its feet (used for knockdowns)."""
+        if self.tilt < 0.01:
+            return sk
+        a = math.radians(self.tilt) * self.facing
+        ca, sa = math.cos(a), math.sin(a)
+        px, py = self.x, self.ground_y
+        lift = 0.05 * self.H * math.sin(math.radians(self.tilt))  # body thickness off the floor
+        out = {}
+        for k, (x, y) in sk.items():
+            if k == "spine":  # a direction, not a point
+                out[k] = (x * ca + y * sa, -x * sa + y * ca)
+            else:
+                dx, dy = x - px, y - py
+                out[k] = (px + dx * ca + dy * sa, py - dx * sa + dy * ca - lift)
+        return out
+
     @staticmethod
     def _limb_end(sk: Dict[str, Vec], limb: str) -> Vec:
         if limb == "front_hand":
@@ -241,7 +268,13 @@ class ShadowEnemy:
         return best
 
     # --- colliders -----------------------------------------------------------
+    @property
+    def can_be_hit(self) -> bool:
+        return self.state not in (EnemyState.DEAD, EnemyState.KNOCKDOWN)
+
     def hurtboxes(self) -> List:
+        if not self.can_be_hit:
+            return []
         return [
             Capsule(self.sk["hip"], self.sk["shoulder"], 0.08 * self.H),
             Circle(self.sk["head"], HEAD_R * self.H * 1.1),
@@ -293,6 +326,34 @@ class ShadowEnemy:
         self.stun_t = C.ENEMY_STUN_TIME
         self.vx = -self.facing * C.ENEMY_KNOCKBACK * self.H
         return "stun"
+
+    def take_kick(self, damage: float) -> str:
+        """Returns 'ko', 'knockdown', 'blocked' or 'none'. An unblocked kick knocks the shadow down."""
+        if not self.can_be_hit:
+            return "none"
+        blocked = (self.state in (EnemyState.IDLE, EnemyState.APPROACH)
+                   and random.random() < C.ENEMY_KICK_BLOCK_CHANCE)
+        self.hp = max(0.0, self.hp - (damage * C.ENEMY_KICK_BLOCK_DAMAGE if blocked else damage))
+        self.flash_t = 0.1
+        if self.hp <= 0:
+            self.state = EnemyState.DEAD
+            self.attack = None
+            return "ko"
+        if blocked:
+            self.block_t = 0.35
+            self.x -= self.facing * 0.03 * self.H
+            return "blocked"
+        self.state = EnemyState.KNOCKDOWN
+        self.attack = None
+        self.down_t = 0.0
+        self._landed = False
+        self.vx = -self.facing * C.ENEMY_KNOCKDOWN_KNOCKBACK * self.H
+        return "knockdown"
+
+    def pop_landed(self) -> bool:
+        """True once, on the frame the shadow hits the floor after a knockdown."""
+        landed, self._landed = self._landed, False
+        return landed
 
     def on_blocked(self) -> None:
         self.attack_resolved = True
@@ -381,6 +442,7 @@ class ShadowEnemy:
         self.anim_t += dt
         self.flash_t = max(0.0, self.flash_t - dt)
         self.stun_immunity = max(0.0, self.stun_immunity - dt)
+        self.block_t = max(0.0, self.block_t - dt)
         if self.state is EnemyState.DEAD:
             return
 
@@ -397,6 +459,10 @@ class ShadowEnemy:
             if self.stun_t <= 0:
                 self._enter_idle(random.uniform(0.25, 0.5))
                 self.stun_immunity = C.ENEMY_STUN_IMMUNITY
+        elif self.state is EnemyState.KNOCKDOWN:
+            target = self._update_knockdown(dt)
+        elif self.block_t > 0:
+            target = BLOCK_POSE
         elif paused:
             target = self._idle_pose()
         else:
@@ -420,11 +486,15 @@ class ShadowEnemy:
                     self.walk_phase += dt * 10.0 * (1 if step * self.facing > 0 else -1)
                     target = self._walk_pose()
 
-        self.x = max(self.sw * 0.04, min(self.sw * 0.96, self.x))
+        # Keep the body on screen, including while it's lying on the floor behind its feet.
+        lying = 1.15 * self.H * math.sin(math.radians(self.tilt))  # feet to outstretched hands
+        lo = self.sw * 0.04 + (lying if self.facing > 0 else 0.0)
+        hi = self.sw * 0.96 - (lying if self.facing < 0 else 0.0)
+        self.x = max(lo, min(hi, self.x))
         if target is not None:
             k = 1.0 - math.exp(-dt * C.ENEMY_POSE_BLEND)
             self.pose = lerp_pose(self.pose, target, k)
-        self.sk = self._skeleton(self.pose, self.x, self.facing)
+        self.sk = self._apply_tilt(self._skeleton(self.pose, self.x, self.facing))
         if self.state is EnemyState.ATTACK:
             cur = self._limb_end(self.sk, self.attack.limb)
             # Sweep only between live frames, never back into the wind-up.
@@ -433,12 +503,38 @@ class ShadowEnemy:
             self._strike_cur = cur
             self._was_live = live
 
+    def _update_knockdown(self, dt: float) -> Pose:
+        """Fall backward, lie on the floor, then get back up."""
+        self.down_t += dt
+        self.x += self.vx * dt
+        self.vx *= math.exp(-5.0 * dt)
+        fall, lie, rise = C.ENEMY_FALL_TIME, C.ENEMY_DOWN_TIME, C.ENEMY_GETUP_TIME
+        t = self.down_t
+        if t < fall:
+            u = t / fall
+            self.tilt = KNOCKDOWN_TILT * u * u  # accelerate into the floor
+            return FALL_POSE
+        if t < fall + lie:
+            if t - dt < fall:  # first frame on the floor
+                self._landed = True
+            bounce = t - fall
+            self.tilt = KNOCKDOWN_TILT - (8.0 * math.sin(math.pi * bounce / 0.2) if bounce < 0.2 else 0.0)
+            return DOWN_POSE
+        if t < fall + lie + rise:
+            self.tilt = KNOCKDOWN_TILT * (1.0 - _ease((t - fall - lie) / rise, "inout"))
+            return GETUP_POSE
+        self.tilt = 0.0
+        self._enter_idle(0.2)
+        self.stun_immunity = C.ENEMY_STUN_IMMUNITY
+        return GUARD
+
     # --- rendering -----------------------------------------------------------
     def draw(self, surf: pygame.Surface) -> None:
         if self.state is EnemyState.DEAD:
             return
         sk, H = self.sk, self.H
-        surf.blit(self._shadow, self._shadow.get_rect(center=(int(self.x), int(self.ground_y))))
+        shadow_x = self.x - self.facing * 0.45 * H * math.sin(math.radians(self.tilt))
+        surf.blit(self._shadow, self._shadow.get_rect(center=(int(shadow_x), int(self.ground_y))))
 
         f = self.facing
         sp = sk["spine"]
